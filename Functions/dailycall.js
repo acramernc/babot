@@ -1,3 +1,42 @@
+/**
+ * @fileoverview Daily Task Scheduler for Baba Discord Bot
+ *
+ * Manages scheduled tasks that run at specific times throughout the day:
+ *
+ * Midnight Tasks (00:00):
+ * - Load database cache (holidays, user values, etc.)
+ * - Check for birthdays and send celebration messages
+ * - Update holiday channel theme based on current date
+ * - Post day-of-week announcement to random channel
+ * - Reset RNG for reproducible Friday command output
+ * - Start reminder system
+ * - Save Friday counter data
+ *
+ * Birthday System:
+ * - Fetches birthdays from database
+ * - Sets global.BirthdayToday for Friday image overlay
+ * - Posts celebration message in designated channel
+ *
+ * Holiday Channel Automation:
+ * - October: Halloween "spook" theme
+ * - November pre-Thanksgiving: "thanks" theme
+ * - November post-Thanksgiving: Christmas "crimbo" theme
+ * - December 1-25: "crimbo" theme
+ * - December 26+: New Year "defeat" theme
+ *
+ * Wednesday Frog System:
+ * - Checks if today is Wednesday
+ * - Posts "It is Wednesday my dudes" with frog image
+ * - Uses random selection from predefined phrases
+ *
+ * Scheduling:
+ * - Uses setTimeout to schedule midnight tasks
+ * - Calculates milliseconds until next midnight
+ * - Reschedules itself daily for continuous operation
+ *
+ * @module dailycall
+ */
+
 var babadata = require('../babotdata.json'); //baba configuration file
 
 const fs = require('fs');
@@ -13,11 +52,12 @@ const { resetRNG } = require('./HelperFunctions/slashFridayHelpers.js');
 const { DailyReminderCall, StartTheReminders } = require('./HelperFunctions/remindersByBaba.js');
 const { getD1 } = require('../Tools/overrides.js');
 
-var to = null;
-var toWed = null;
-var toTyp = null;
+// Timeout handles for scheduled tasks
+var to = null;       // Daily midnight call timeout
+var toWed = null;    // Wednesday frog timeout
+var toTyp = null;    // Typing indicator timeout
 
-global.BirthdayToday = null;
+global.BirthdayToday = null; // Set to array of birthday names for Friday overlay
 
 function dailyCallStart(bot, dirName)
 {

@@ -1,3 +1,31 @@
+/**
+ * @fileoverview Admin Helper Functions for Baba Discord Bot
+ *
+ * Provides administrative and moderation utilities:
+ *
+ * Role Management:
+ * - setGrole(): Creates roles and assigns to users based on message reactions
+ * - Automatically creates roles if they don't exist
+ * - Fetches users who reacted and assigns role to them
+ *
+ * Message Management:
+ * - movetoChannel(): Archives messages to log channel
+ * - Downloads and re-uploads attachments (preserves media)
+ * - Deletes original message after successful archive
+ * - Permission check: requires babadata.adminId
+ *
+ * Reaction Utilities:
+ * - setVotes(): Adds thumbs up/down reactions for voting
+ * - setBanHammer(): Adds ban hammer emoji reaction
+ * - Used for community polls and moderation markers
+ *
+ * Bulk Operations:
+ * - Processes multiple users from reaction collections
+ * - Handles async operations with proper error handling
+ *
+ * @module adminHelpers
+ */
+
 var babadata = require('../../babotdata.json'); //baba configuration file
 
 var request = require('node-fetch');

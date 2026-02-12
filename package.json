@@ -4,7 +4,8 @@
   "description": "admin bot for glorious trumpet land",
   "main": "babot.js",
   "scripts": {
-    "test": "echo \"Testing is for nerds\" && exit 1"
+    "test": "echo \"Testing is for nerds\" && exit 1",
+    "start": "node babot.js"
   },
   "repository": {
     "type": "git",

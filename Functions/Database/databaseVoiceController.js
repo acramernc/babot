@@ -5,22 +5,43 @@ var mysql = require('mysql2');
 
 const { getD1 } = require('../../Tools/overrides');
 
+// MySQL connection instance (null when disconnected)
 var con;
 
+// Timeout handle for auto-disconnect after 60s of inactivity
 var timeoutDisconnect = null;
+
+// Timeout handle for database reconnection retry attempts
 var timeoutFix = null;
 
+// Timeout handle for clearing voice channel change list after DB restore
 var timeoutClear = null;
 
+// Error counter for connection failures - triggers retry mode when >1
+// Resets to 0 when connection is stable again
 var timeoutCT = 0;
 
 
-// TBD make connection only connect on calls to SQL, and then auto disconnect after 5 seconds of inactivity
-// if sql attempt fails, then try to reconnect every 5 seconds for first minute, then minutely until it works again, then once it works, trigger all the queries that failed
+// Connection Management Strategy:
+// - Connects on SQL query, auto-disconnects after 60 seconds of inactivity
+// - On failure: retry every 60 seconds until connection restores
+// - On restore: confirm stability with 3 ping attempts, then replay queued voice changes
 
 
+// ============================================
 // Helper Functions
+// ============================================
 
+/**
+ * Splits string into chunks at space boundaries for Discord message limits
+ *
+ * Discord has a 2000 character limit per message. This function splits long
+ * strings at word boundaries to ensure each chunk is ≤1900 characters (leaving
+ * room for embeds/formatting).
+ *
+ * @param {string} str - Input string to split
+ * @returns {string[]} Array of strings, each ≤1900 characters
+ */
 function splitStringInto1900CharChunksonSpace(str)
 {
 	var chunks = [];
@@ -39,6 +60,18 @@ function splitStringInto1900CharChunksonSpace(str)
 	return chunks;
 }
 
+// ============================================
+// Database Connection Management
+// ============================================
+
+/**
+ * Pings the MySQL connection to verify it's alive
+ *
+ * Tests the existing connection health. If connection fails or is null,
+ * returns appropriate status code.
+ *
+ * @returns {Promise<string>} Resolves with "true" if connected, "false" if null, "ERROR" on failure
+ */
 function pingConnection()
 {
     var PromisedPing = new Promise((resolve, reject) =>
@@ -71,6 +104,20 @@ function pingConnection()
     return PromisedPing;
 }
 
+/**
+ * Retrieves database connection, creating new one if needed
+ *
+ * Implements auto-disconnect after 60 seconds of inactivity to prevent connection
+ * pool exhaustion. Pings existing connection to verify it's alive before returning.
+ * Creates new MySQL connection if current one is dead or null.
+ *
+ * Side effects:
+ * - Sets global timeout for auto-disconnect
+ * - May create new MySQL connection
+ * - Clears existing disconnect timeout
+ *
+ * @returns {Promise<mysql.Connection>} Active MySQL connection with UTF8MB4 charset
+ */
 async function getConnection()
 {
     var pingged = await pingConnection();
@@ -84,16 +131,18 @@ async function getConnection()
             password: babadata.database.password,
             database: babadata.database.database,
             port: babadata.database.port,
-            charset : 'utf8mb4_general_ci'
+            charset : 'utf8mb4_general_ci' // UTF8MB4 supports all Unicode characters including emojis
         });
     }
 
+    // Clear any existing disconnect timeout
     if (timeoutDisconnect != null)
     {
         clearTimeout(timeoutDisconnect);
         timeoutDisconnect = null;
     }
 
+    // Auto-disconnect after 60 seconds of inactivity to prevent connection pool exhaustion
     timeoutDisconnect = setTimeout(function()
     {
         if (con != null)
@@ -127,16 +176,34 @@ async function getConnection()
     return con;
 }
 
-
+/**
+ * Handles database connection errors with progressive retry logic
+ *
+ * Implements sophisticated retry mechanism:
+ * - First 2 errors: Just log and increment counter
+ * - Subsequent errors: Disable DB access flag, start 60-second retry cycle
+ * - On restore: Performs 3 confirmation pings at 10-second intervals
+ * - If stable: Restores user voice data
+ * - If unstable: Returns to retry mode
+ *
+ * Side effects:
+ * - Modifies global.dbAccess[1] flag
+ * - Sets multiple timers (timeoutFix, timeoutDisconnect, timeoutClear)
+ * - Increments timeoutCT counter
+ * - May trigger clearVCCList() to restore voice data
+ */
 function dbErrored()
 {
     timeoutCT++;
     console.log("Database Connection Failed -> " + timeoutCT, false, true);
 
+    // Only enter retry mode after 2 failures to avoid false positives from transient errors
     if (timeoutCT > 1)
     {
+        // Disable database access flag to prevent new queries during reconnection
         global.dbAccess[1] = false;
 
+        // Clear all existing timers to prevent conflicts with new retry cycle
         if (timeoutFix != null)
         {
             clearTimeout(timeoutFix);
@@ -154,7 +221,8 @@ function dbErrored()
             clearTimeout(timeoutClear);
             timeoutClear = null;
         }
-        
+
+        // Begin 60-second retry cycle
         timeoutFix = setTimeout(async function()
         {
             var pingged = await pingConnection();
@@ -184,71 +252,91 @@ function dbErrored()
             {
                 console.log("Database Connection Possibly Restored", false, true);
 
-                // Try 3 more times at 10s intervals to confirm stability
+                // Stability confirmation: Ping 3 times at 10-second intervals to ensure connection is stable
+                // Prevents premature restoration that could corrupt voice activity logs
                 let confirmAttempts = 0;
                 let confirmFailures = 0;
-                const confirmDbRestore = async () => 
+                const confirmDbRestore = async () =>
                 {
                     let pingged = await pingConnection();
-                    if (pingged !== "true") 
+                    if (pingged !== "true")
                     {
                         confirmFailures++;
                     }
                     console.log("Confirming DB Restore: Attempt " + (confirmAttempts + 1) + " - Ping Result: " + pingged, false, true);
 
                     confirmAttempts++;
-                    if (confirmAttempts < 3) 
+                    if (confirmAttempts < 3)
                     {
+                        // Schedule next confirmation attempt in 10 seconds
                         setTimeout(confirmDbRestore, 10000);
-                    } 
-                    else 
+                    }
+                    else
                     {
-                        if (confirmFailures > 0) 
+                        // All 3 confirmation attempts complete - evaluate results
+                        if (confirmFailures > 0)
                         {
-                            // If any failed, revert to retrying every 60s and restore timeoutCT
+                            // Connection still unstable - return to 60-second retry cycle
                             console.log("DB unstable after restore, reverting to retry mode", false, true);
                             timeoutFix = setTimeout(arguments.callee, 60000);
-                        } 
-                        else 
+                        }
+                        else
                         {
+                            // Connection confirmed stable - restore normal operations
                             global.dbAccess[1] = true;
                             timeoutCT = 0;
                             clearTimeout(timeoutFix);
                             timeoutFix = null;
 
-                            // All confirmed, proceed to restore user voice data
+                            // Replay voice activity changes that were queued in CSV during downtime
                             console.log("Restoring User Voice Data in 10 seconds", false, true);
-                            timeoutClear = setTimeout(function() 
+                            timeoutClear = setTimeout(function()
                             {
                                 console.log("Restoring User Voice Data", false, true);
-                                clearVCCList();
+                                clearVCCList(); // Processes loggedUsersVCC.csv
                             }, 10000);
                         }
                     }
                 };
+                // Begin first confirmation attempt in 10 seconds
                 setTimeout(confirmDbRestore, 10000);
             }
         }, 60000);
     }
 }
 
+/**
+ * Executes SQL query with connection management and error handling
+ *
+ * Obtains active connection, checks global DB access flags, executes query,
+ * and handles errors via ErrorWithDB(). Resets timeout counter on success.
+ *
+ * @param {string} query - SQL query string to execute
+ * @returns {Promise<Object[]>} Query result set
+ * @throws {Error} If database not accessible or query fails
+ */
 async function callSQLQuery(query)
 {
     var condor = await getConnection();
     return new Promise((resolve, reject) =>
     {
+        // Dual flag check: dbAccess[0] = allowDB from config, dbAccess[1] = connection health status
+        // Both must be true for queries to execute - allows manual DB disable and automatic failure handling
         if ((global.dbAccess[1] && global.dbAccess[0]))
         {
             condor.query(query, function (err, result)
             {
-                if (err) 
+                if (err)
                 {
                     ErrorWithDB(err, query);
                     reject(err);
                 }
-                else 
+                else
                 {
+                    // Successful query - ensure health flag is true
                     global.dbAccess[1] = true;
+
+                    // Reset error counter on first successful query after failures
                     if (timeoutCT > 0)
                     {
                         timeoutCT = 0;
@@ -260,6 +348,8 @@ async function callSQLQuery(query)
         }
         else
         {
+            // Silent failure mode - queries fail gracefully when DB is disabled or unhealthy
+            // Prevents cascade of error messages during downtime
             console.log("Query did not Run:", false, true);
             console.log(query, false, true);
             console.log("Database Not Accessible", false, true);
@@ -268,6 +358,19 @@ async function callSQLQuery(query)
     });
 }
 
+/**
+ * Handles database errors by logging query and error details
+ *
+ * Logs error to console and DMs admin via DMMePlease. Splits long queries into
+ * chunks for Discord message limits. Triggers dbErrored() retry logic.
+ *
+ * Side effects:
+ * - Sends DM notifications to admin thread
+ * - Calls dbErrored() to initiate retry mechanism
+ *
+ * @param {Error} err - The error object from MySQL
+ * @param {string} query - The SQL query that caused the error
+ */
 function ErrorWithDB(err, query)
 {
     console.log("Error Occured because of Query: ", false, true);
@@ -285,6 +388,19 @@ function ErrorWithDB(err, query)
     dbErrored();
 }
 
+/**
+ * Sends debug/error messages to admin log thread in Discord
+ *
+ * Posts message to configured log thread channel for monitoring and debugging.
+ * Uses different guild/channel IDs based on testing flag in babotdata.json.
+ *
+ * Side effects:
+ * - Posts message to Discord thread
+ * - May log to console if consoledlog is true
+ *
+ * @param {string} sourceMessage - Message to send to admin log
+ * @param {boolean} [consoledlog=true] - Whether to also log to console
+ */
 function DMMePlease(sourceMessage, consoledlog = true)
 {
     if (consoledlog)
@@ -307,6 +423,19 @@ function DMMePlease(sourceMessage, consoledlog = true)
     }).catch(console.error);
 }
 
+/**
+ * Sends file data to admin log thread as JSON attachment
+ *
+ * Converts JavaScript object to formatted JSON and posts as file attachment
+ * to admin log thread for debugging/inspection.
+ *
+ * Side effects:
+ * - Posts file attachment to Discord thread
+ *
+ * @param {string} filename - Name for the attached file
+ * @param {Object} filedata - JavaScript object to serialize as JSON
+ * @param {string} description - Message content accompanying the file
+ */
 function DMMEAFile(filename, filedata, description)
 {
     var guildID = babadata.testing === undefined ? "454457880825823252" : "522136584649310208";
@@ -326,8 +455,20 @@ function DMMEAFile(filename, filedata, description)
     }).catch(console.error);
 }
 
-// Name User ID Functions -------------------------------------------------------------------------------------------------------------------------------------------
+// ============================================
+// User Name Lookup Functions
+// ============================================
 
+/**
+ * Retrieves username from user ID via cache
+ *
+ * Checks global userCache first. If not found, loads user values from database
+ * cache and retries. Used for displaying usernames in logs and messages.
+ *
+ * @param {string} userID - Discord user ID
+ * @returns {Promise<string>} Username from cache
+ * @throws {string} "NameFromUserID" if user not found after cache load
+ */
 function NameFromUserIDID(userID)
 {
     var PromisedName = new Promise((resolve, reject) =>
@@ -357,10 +498,31 @@ function NameFromUserIDID(userID)
     return PromisedName;
 }
 
-// Event DB Functions -----------------------------------------------------------------------------------------------------------------------------------------------
+// ============================================
+// Discord Event Database Functions
+// ============================================
+
+/**
+ * Syncs Discord scheduled events to database
+ *
+ * Handles create, update, delete, useradd, and userremove event changes.
+ * Stores event metadata (name, description, times, status, location) and tracks
+ * user participation including join/leave patterns and "flaking" behavior.
+ *
+ * Event statuses: 1=SCHEDULED, 2=ACTIVE, 3=COMPLETED, 4=CANCELED
+ *
+ * Side effects:
+ * - Inserts/updates records in scheduleevent table
+ * - Tracks user joins/leaves in eventpurity table
+ *
+ * @param {Discord.GuildScheduledEvent} event - Discord event object
+ * @param {string} change - Type of change: "create", "update", "delete", "useradd", "userremove"
+ * @param {Discord.User} [user] - User object (for useradd/userremove changes)
+ */
 function EventDB(event, change, user)
 {
 	var eid = event.id;
+    // Branch 1: Event metadata changes (create/update/delete)
     if (!change.includes("user"))
     {
         var cid = event.creatorId;
@@ -369,25 +531,28 @@ function EventDB(event, change, user)
         var desc = event.description;
         var d1 = new Date(event.scheduledStartTimestamp);
         var d2 = new Date(event.scheduledEndTimestamp);
+
+        // Convert Discord's numeric status codes to readable strings
         var status = event.status;
         switch (status)
         {
             case 1:
-                status = "SCHEDULED";
+                status = "SCHEDULED"; // Event created, not started
                 break;
             case 2:
-                status = "ACTIVE";
+                status = "ACTIVE"; // Event currently running
                 break;
             case 3:
-                status = "COMPLETED";
+                status = "COMPLETED"; // Event finished normally
                 break;
             case 4:
-                status = "CANCELED";
+                status = "CANCELED"; // Event deleted before completion
                 break;
         }
 
         var loc = "Voice Channel";
 
+        // Zero-pad single-digit months and days for MySQL DATETIME format: YYYY-MM-DD HH:MM:SS
         var mpre1 = d1.getMonth() + 1 < 10 ? 0 : "";
         var dpre1 = d1.getUTCDate() < 10 ? 0 : "";
         var mpre2 = d2.getMonth() + 1 < 10 ? 0 : "";
@@ -395,8 +560,8 @@ function EventDB(event, change, user)
 
         var start = `${d1.getFullYear()}-${mpre1}${d1.getMonth() + 1}-${dpre1}${d1.getUTCDate()} ${d1.getHours()}:${d1.getMinutes()}:${d1.getSeconds()}`
         var end = `${d2.getFullYear()}-${mpre2}${d2.getMonth() + 1}-${dpre2}${d2.getUTCDate()} ${d2.getHours()}:${d2.getMinutes()}:${d2.getSeconds()}`
-        
-        // add time leaving and joining
+
+        // Extract location from metadata for external events (not voice channels)
         if (event.entityMetadata != null)
         {
             loc = event.entityMetadata.location;
@@ -424,19 +589,23 @@ function EventDB(event, change, user)
             .catch((err) => {DMMePlease("Error Updating Event: " + err)});
         }
     }
-    else 
+    // Branch 2: User participation tracking (useradd/userremove)
+    else
     {
         var uid = user.id;
         var time = getD1(true);
         var mpre = time.getMonth() + 1 < 10 ? 0 : "";
         var dpre = time.getUTCDate() < 10 ? 0 : "";
         var jtime = `${time.getFullYear()}-${mpre}${time.getMonth() + 1}-${dpre}${time.getUTCDate()} ${time.getHours()}:${time.getMinutes()}:${time.getSeconds()}`
+
         if (change == "useradd")
         {
+            // User clicked "Interested" - try to update existing record first
             var query = `UPDATE eventpurity SET flaked = 0, timesrejoined = timesrejoined + 1, joined = 1, latestjointime = "${jtime}", flaketime = null WHERE eventID = "${eid}" AND userID = "${uid}"`;
             callSQLQuery(query)
             .then((result) =>
             {
+                // If no existing record (affectedRows = 0), create new participation record
                 if (result.affectedRows == 0)
                 {
                     var innrquery = `INSERT INTO eventpurity (eventID, userID, flaked, timesrejoined, joined, latestjointime, initjointime) VALUES ("${eid}", "${uid}", 0, 1, 1, "${jtime}", "${jtime}")`;
@@ -449,6 +618,8 @@ function EventDB(event, change, user)
         }
         else if (change == "userremove")
         {
+            // User removed interest - mark as "flaked" with timestamp
+            // Tracks users who repeatedly join/leave events (flaky behavior)
             var query = `UPDATE eventpurity SET flaked = 1, joined = 0, flaketime = "${jtime}", latestjointime = null WHERE eventID = "${eid}" AND userID = "${uid}"`;
             callSQLQuery(query)
             .then((result) => {})
@@ -457,8 +628,24 @@ function EventDB(event, change, user)
     }
 }
 
-// Opting Functions -------------------------------------------------------------------------------------------------------------------------------------------------
+// ============================================
+// User Opt-In/Out Functions
+// ============================================
 
+/**
+ * Opts user into a feature type (e.g., mentions, notifications)
+ *
+ * Updates or inserts user preference in opting table. Used for managing
+ * user preferences for various bot features.
+ *
+ * Side effects:
+ * - Updates/inserts record in opting table
+ *
+ * @param {Discord.User} user - Discord user object
+ * @param {string} type - Feature type identifier (ItemToRemove column value)
+ * @returns {Promise<string>} "OptIn" on success
+ * @throws {string} "OptIn" on database error
+ */
 function optIn(user, type)
 {
     var PromisedOptIn = new Promise((resolve, reject) =>
@@ -485,6 +672,19 @@ function optIn(user, type)
     return PromisedOptIn;
 }
 
+/**
+ * Opts user out of a feature type
+ *
+ * Updates or inserts user preference to "out" in opting table.
+ *
+ * Side effects:
+ * - Updates/inserts record in opting table
+ *
+ * @param {Discord.User} user - Discord user object
+ * @param {string} type - Feature type identifier
+ * @returns {Promise<string>} "OptOut" on success
+ * @throws {string} "OptOut" on database error
+ */
 function optOut(user, type)
 {
     var PromisedOptOut = new Promise((resolve, reject) =>
@@ -511,8 +711,24 @@ function optOut(user, type)
     return PromisedOptOut;
 }
 
-// Voice Channel Functions ------------------------------------------------------------------------------------------------------------------------------------------
+// ============================================
+// Voice Channel Tracking Functions
+// ============================================
 
+/**
+ * Ensures user exists in database, creating if necessary
+ *
+ * Checks userval table for user record. If not found, inserts new record.
+ * Used before logging voice channel activity to ensure foreign key constraints.
+ *
+ * Side effects:
+ * - May insert new user record in userval table
+ *
+ * @param {string} userID - Discord user ID
+ * @param {string} userName - Username to store
+ * @returns {Promise<string>} "User Created" or "User Exists"
+ * @throws {string} "CreateUser" on database error
+ */
 function CheckAndCreateUser(userID, userName)
 {
     var PromisedUser = new Promise((resolve, reject) =>
@@ -539,6 +755,20 @@ function CheckAndCreateUser(userID, userName)
     return PromisedUser;
 }
 
+/**
+ * Ensures voice channel exists in database, creating if necessary
+ *
+ * Checks channelval table for channel record. If not found, inserts new record
+ * with type "Voice". Used before logging voice activity.
+ *
+ * Side effects:
+ * - May insert new channel record in channelval table
+ *
+ * @param {string} channelID - Discord channel ID
+ * @param {string} channelName - Channel name to store
+ * @returns {Promise<string>} "Channel Created" or "Channel Exists"
+ * @throws {string} "CreateChannel" on database error
+ */
 function checkAndCreateChannel(channelID, channelName)
 {
     var PromisedChannel = new Promise((resolve, reject) =>
@@ -565,6 +795,26 @@ function checkAndCreateChannel(channelID, channelName)
     return PromisedChannel;
 }
 
+/**
+ * Executes voice activity query with automatic user/channel creation fallback
+ *
+ * Attempts to insert/update voice activity record. If foreign key constraint fails
+ * (user or channel doesn't exist), automatically creates missing records and retries.
+ * This handles race conditions where users join channels before being cached.
+ *
+ * Side effects:
+ * - Executes voice activity query
+ * - May create user and/or channel records
+ * - Retries query after creating missing records
+ *
+ * @param {string} queryz - SQL query to execute
+ * @param {string} userID - Discord user ID
+ * @param {string} channelID - Discord channel ID
+ * @param {Discord.Guild} guild - Discord guild object for fetching channel/member data
+ * @param {string} subtext - Description of action ("Joined" or "Left")
+ * @returns {Promise<string>} The executed query string
+ * @throws {string} "UserVoiceChange" on database error
+ */
 function userVoiceChange(queryz, userID, channelID, guild, subtext)
 {
     var PromisedVoiceChange = new Promise((resolve, reject) =>
@@ -575,30 +825,39 @@ function userVoiceChange(queryz, userID, channelID, guild, subtext)
         {
             resolve(queryz);
         })
-        .catch((err) => 
+        .catch((err) =>
         {
+            // Foreign key error handling: voiceactivity table has foreign keys to channels and users tables
+            // If query fails due to missing channel/user record, create it and retry
+
+            // voiceactivity_ibfk_1 = Foreign key constraint on ChannelID
             if (err != null && err.sqlMessage != null && err.sqlMessage.includes("voiceactivity_ibfk_1"))
             {
                 console.log("Error: " + err.sqlMessage, false, true);
+                // Channel doesn't exist in database - fetch from Discord and create record
                 guild.channels.fetch(channelID)
-                .then(channel => 
+                .then(channel =>
                 {
                     checkAndCreateChannel(channelID, channel.name).then(() =>
                     {
+                        // Retry original query after creating channel record
                         userVoiceChange(queryz, userID, channelID, guild, subtext).then((result) => {resolve(result)}).catch((err) => {reject(err)});
                     })
                     .catch((err) => {reject("CreateChannel")});
                 })
                 .catch(console.error);
             }
+            // voiceactivity_ibfk_2 = Foreign key constraint on UserID
             else if (err != null && err.sqlMessage != null && err.sqlMessage.includes("voiceactivity_ibfk_2"))
             {
                 console.log("Error: " + err.sqlMessage, false, true);
+                // User doesn't exist in database - fetch from Discord and create record
                 guild.members.fetch(userID)
-                .then(user => 
+                .then(user =>
                 {
                     CheckAndCreateUser(userID, user.user.username).then(() =>
                     {
+                        // Retry original query after creating user record
                         userVoiceChange(queryz, userID, channelID, guild, subtext).then((result) => {resolve(result)}).catch((err) => {reject(err)});
                     })
                     .catch((err) => {reject("CreateUser")});
@@ -607,6 +866,7 @@ function userVoiceChange(queryz, userID, channelID, guild, subtext)
             }
             else
             {
+                // Other error types - fail gracefully
                 console.log("Error: " + err, false, true);
                 reject("UserVoiceChange");
             }
@@ -616,6 +876,25 @@ function userVoiceChange(queryz, userID, channelID, guild, subtext)
     return PromisedVoiceChange;
 }
 
+/**
+ * Records user joining a voice channel
+ *
+ * Inserts StartTime record in voiceactivity table when user enters a voice channel.
+ * Uses userVoiceChange for automatic user/channel creation if needed.
+ *
+ * SQL: INSERT INTO voiceactivity (ChannelID, UserID, StartTime) VALUES (...)
+ *
+ * Side effects:
+ * - Inserts new record in voiceactivity table
+ * - May create user/channel records if missing
+ *
+ * @param {string} userID - Discord user ID
+ * @param {string} channelID - Discord voice channel ID
+ * @param {Discord.Guild} guild - Discord guild object
+ * @param {Date} [overideTime=null] - Optional time override for logging historical data
+ * @returns {Promise<string>} The executed query string
+ * @throws {string} "JoinVoice" on database error
+ */
 function userJoinedVoice(userID, channelID, guild, overideTime = null)
 {
     var PromisedUserJoined = new Promise((resolve, reject) =>
@@ -629,6 +908,24 @@ function userJoinedVoice(userID, channelID, guild, overideTime = null)
     return PromisedUserJoined;
 }
 
+/**
+ * Records user leaving a voice channel
+ *
+ * Updates EndTime for the most recent voiceactivity record where EndTime is NULL.
+ * Completes the duration tracking for a user's voice session.
+ *
+ * SQL: UPDATE voiceactivity SET EndTime = ... WHERE UserID = ... AND ChannelID = ... AND EndTime IS NULL
+ *
+ * Side effects:
+ * - Updates EndTime in voiceactivity table
+ *
+ * @param {string} userID - Discord user ID
+ * @param {string} channelID - Discord voice channel ID
+ * @param {Discord.Guild} guild - Discord guild object
+ * @param {Date} [overideTime=null] - Optional time override for logging historical data
+ * @returns {Promise<string>} The executed query string
+ * @throws {string} "LeaveVoice" on database error
+ */
 function userLeftVoice(userID, channelID, guild, overideTime = null)
 {
     var PromisedUserLeft = new Promise((resolve, reject) =>
@@ -642,46 +939,99 @@ function userLeftVoice(userID, channelID, guild, overideTime = null)
     return PromisedUserLeft;
 }
 
+/**
+ * Logs voice channel change to CSV when database write fails
+ *
+ * Fallback mechanism that appends voice activity to CSV file when database is
+ * unavailable. CSV is later processed by clearVCCList() when DB restores.
+ * Time is stored as Unix timestamp (milliseconds).
+ *
+ * Side effects:
+ * - Creates loggedUsersVCC.csv if doesn't exist
+ * - Appends CSV line: newMemberID,newChannelID,oldMemberID,oldChannelID,timestamp,guildID
+ *
+ * @param {string} newMemberID - User ID after change
+ * @param {string} newChannelID - Channel ID user joined (null if left all channels)
+ * @param {string} oldMemberID - User ID before change
+ * @param {string} oldChannelID - Channel ID user left (null if newly joined)
+ * @param {string} guildID - Discord guild ID
+ * @param {Date} [timeoveride=null] - Optional time override
+ */
 function logVCC(newMemberID, newChannelID, oldMemberID, oldChannelID, guildID, timeoveride = null)
 {
     var time = getD1(true);
 	console.log("Logging VCC Data: " + newMemberID + " " + oldMemberID + " " + newChannelID + " " + oldChannelID + " " + time + " " + guildID, false, true);
-	// save time as a number
+
+	// Convert time to Unix timestamp (milliseconds since epoch) for compact storage
 	time = time.getTime();
 
     if (timeoveride != null)
         time = timeoveride.getTime();
 
+	// Create CSV file if it doesn't exist
 	if (!fs.existsSync(babadata.datalocation + "loggedUsersVCC.csv"))
 	{
 		fs.writeFileSync(babadata.datalocation + "loggedUsersVCC.csv", "");
 	}
 
+	// Append voice change as CSV line: newMemberID,newChannelID,oldMemberID,oldChannelID,timestamp,guildID
+	// This creates a queue that will be replayed when database connection is restored
 	fs.appendFileSync(babadata.datalocation + "loggedUsersVCC.csv", newMemberID + "," + newChannelID + "," + oldMemberID + "," + oldChannelID + "," + time + "," + guildID + "\n");
 }
 
+/**
+ * Processes queued voice channel changes from CSV after DB restore
+ *
+ * Called by dbErrored() after database connection is restored. Reads CSV of
+ * failed voice activity logs, clears the CSV, and replays each event to database
+ * sequentially with 100ms delay between each to prevent overwhelming reconnected DB.
+ *
+ * Side effects:
+ * - Reads loggedUsersVCC.csv file
+ * - Clears loggedUsersVCC.csv immediately after reading
+ * - Processes each line through voiceChannelChangeLOGGED
+ * - May write voice activity records to database
+ *
+ * @see logVCC
+ * @see voiceChannelChangeLOGGED
+ * @see saveStuff
+ */
 function clearVCCList()
 {
-	// load loggedUsersVCC.json
+	// Load all queued voice changes that occurred during database downtime
 	var loggedUsersVCC = fs.readFileSync(babadata.datalocation + "loggedUsersVCC.csv");
-	// clear the file
+
+	// Clear CSV immediately to prevent re-processing if bot crashes during replay
 	fs.writeFileSync(babadata.datalocation + "loggedUsersVCC.csv", "");
 
 	loggedUsersVCC = loggedUsersVCC.toString();
 
-	// loop through each line
-	// for each line, get the newMember.id, newMember.channelId, oldMember.id, oldMember.channelId, time
-	// call voiceChannelChangeLOGGED(newMember.id, oldMember.id, newMember.channelId, oldMember.channelId, time)
-    // Process lines sequentially to ensure saveStuff runs one at a time
+	// Parse CSV and replay each voice change to database
+	// Format: newMemberID,newChannelID,oldMemberID,oldChannelID,timestamp,guildID
+	// Process sequentially with delays to prevent overwhelming freshly restored database
     var lines = loggedUsersVCC.split("\n");
-    async function processLinesSequentially(lines) 
+    async function processLinesSequentially(lines)
     {
         for (let i = 0; i < lines.length; i++)
-            await saveStuff(lines[i], i);
+            await saveStuff(lines[i], i); // Delays by (100ms * i) to stagger writes
     }
     processLinesSequentially(lines);
 }
 
+/**
+ * Processes a single CSV line from voice activity queue with delay
+ *
+ * Helper for clearVCCList that parses CSV line and calls voiceChannelChangeLOGGED.
+ * Uses setTimeout with 100ms * index delay to prevent overwhelming database with
+ * rapid sequential writes after reconnection.
+ *
+ * CSV format: newMemberID,newChannelID,oldMemberID,oldChannelID,timestamp,guildID
+ * Converts "null" strings to actual null, parses Unix timestamp to Date.
+ *
+ * @param {string} lineWhole - CSV line containing voice activity data
+ * @param {number} i - Line index used to calculate delay (i * 100ms)
+ * @returns {Promise<void>} Resolves after processing completes or fails
+ */
 function saveStuff(lineWhole, i)
 {
     return new Promise((resolve) =>
@@ -698,7 +1048,7 @@ function saveStuff(lineWhole, i)
                 var time = line[4];
                 // convert time to Date object
                 time = new Date(parseInt(time));
-                
+
                 var guildID = line[5];
                 // voiceChannelChangeLOGGED is async, so wait for it to finish
                 Promise.resolve(voiceChannelChangeLOGGED(newMemberID, oldMemberID, newChannelID, oldChannelID, time, guildID))
@@ -711,11 +1061,30 @@ function saveStuff(lineWhole, i)
     });
 }
 
+/**
+ * Processes historical voice channel change from CSV log
+ *
+ * Replays a voice activity event that was queued to CSV due to database failure.
+ * Similar to voiceChannelChange but uses pre-recorded timestamps and doesn't
+ * handle Shadow Realm channel status updates. On failure, re-logs to CSV.
+ *
+ * Side effects:
+ * - Calls userJoinedVoice if user joined new channel (respects opt-in)
+ * - Calls userLeftVoice if user left old channel
+ * - Re-logs to CSV via logVCC if database write still fails
+ *
+ * @param {string} newMemberID - User ID after change
+ * @param {string} oldMemberID - User ID before change
+ * @param {string} newChannelID - Channel ID user joined (null if left all)
+ * @param {string} oldChannelID - Channel ID user left (null if newly joined)
+ * @param {Date} [overideTime=null] - Historical timestamp from CSV
+ * @param {string} guildID - Discord guild ID
+ */
 function voiceChannelChangeLOGGED(newMemberID, oldMemberID, newChannelID, oldChannelID, overideTime = null, guildID)
 {
 	global.Bot.guilds.fetch(guildID).then(async guild =>
 	{
-        const VCCChangeAsync = async function() 
+        const VCCChangeAsync = async function()
         {
             if (newChannelID != null && newChannelID != oldChannelID && userOptValue(guild, newMemberID, "voice"))
             {
@@ -735,7 +1104,7 @@ function voiceChannelChangeLOGGED(newMemberID, oldMemberID, newChannelID, oldCha
             VCCChangeAsync().then(() =>
             {
                 console.log("Voice Channel Change Complete from Logged Values", false, true);
-            }).catch((err) => 
+            }).catch((err) =>
             {
                 DMMePlease("Error in Voice Channel Change from Logged Values: " + err);
                 logVCC(newMemberID, newChannelID, oldMemberID, oldChannelID, guildID, overideTime);
@@ -744,13 +1113,22 @@ function voiceChannelChangeLOGGED(newMemberID, oldMemberID, newChannelID, oldCha
 	});
 }
 
+/**
+ * Retrieves username from cache without throwing errors
+ *
+ * Wrapper around NameFromUserIDID that returns "No One" on failure instead of
+ * rejecting. Used for display purposes where a fallback username is acceptable.
+ *
+ * @param {string} userid - Discord user ID
+ * @returns {Promise<string>} Username or "No One" if not found
+ */
 function NameFromUserIDNoFakes(userid)
 {
     var userDBItemPromise = new Promise((resolve, reject) => {
         NameFromUserIDID(userid).then((result) =>
         {
             resolve(result.PersonName);
-        }).catch((err) => 
+        }).catch((err) =>
         {
             resolve("No One");
         });
@@ -759,29 +1137,49 @@ function NameFromUserIDNoFakes(userid)
     return userDBItemPromise;
 }
 
+/**
+ * Selects best username for member with priority order and sanitization
+ *
+ * Attempts to find a suitable display name by checking multiple sources in
+ * specified priority order. Useful for consistent display names in voice channel
+ * status updates and logs.
+ *
+ * Name sources:
+ * - N: Discord server nickname (member.nickname)
+ * - C: Cached name from database (historical name)
+ * - G: Discord global display name (member.user.globalName)
+ * - U: Discord username (member.user.username)
+ *
+ * @param {Discord.GuildMember} member - Discord guild member object
+ * @param {string[]} [order=["N","C","G","U"]] - Priority order for name sources
+ * @param {boolean} [regexTrim=true] - If true, removes all non-alphanumeric chars except spaces
+ * @returns {Promise<string>} First available name from priority order, sanitized if requested
+ */
 async function PickThePerfectUsername(member, order = ["N", "C", "G", "U"], regexTrim = true)
 {
-	// N - Discord Nickname in Server
-	// C - Cached Name (from database)
-	// G - Discord Global Nickname
-	// U - Discord Username
+	// 4-tier username fallback system:
+	// N - Discord Nickname in Server (user-set per-server display name)
+	// C - Cached Name from database (historical name, useful when Discord names are hidden)
+	// G - Discord Global Nickname (user's cross-server display name)
+	// U - Discord Username (permanent account name, always available)
 
     nName = member.nickname;
     cahcedName = await NameFromUserIDNoFakes(member.user.id);
     gName = member.user.globalName;
     uName = member.user.username;
 
-    // if any are null set to empty string
+    // Convert nulls to empty strings to enable priority checking
     if (nName == null)
         nName = "";
     if (cahcedName == null)
         cahcedName = "";
-    if (gName == null || gName == "No One")
+    if (gName == null || gName == "No One") // "No One" is Discord's placeholder for unset global names
         gName = "";
     if (uName == null)
         uName = "";
 
-    // filter to only character a-z, A-Z, 0-9, and space
+    // Sanitize names by removing emojis, special characters, Unicode that breaks image generation
+    // Keeps only alphanumeric and spaces for safe display in images/logs
     if (regexTrim)
     {
         var regex = /[^a-zA-Z0-9 ]/g;
@@ -791,10 +1189,11 @@ async function PickThePerfectUsername(member, order = ["N", "C", "G", "U"], rege
         uName = uName.replace(regex, '');
     }
 
-	// Loop through the order array and return the first non-empty name
-	for (const key of order) 
+	// Return first non-empty name according to priority order
+	// Default order prefers server-specific names over global names
+	for (const key of order)
 	{
-		switch (key) 
+		switch (key)
 		{
 			case "N":
 				if (nName != "") return nName;
@@ -811,18 +1210,40 @@ async function PickThePerfectUsername(member, order = ["N", "C", "G", "U"], rege
 		}
 	}
 
+    // Fallback to username if all others are empty (should never happen, but defensive programming)
     return uName;
 }
 
+/**
+ * Main handler for Discord voice state changes
+ *
+ * Triggered by Discord.js voiceStateUpdate event when users join/leave/switch voice
+ * channels. Tracks activity in database and manages special "Shadow Realm" channel
+ * status that displays sleeping users.
+ *
+ * Special handling:
+ * - Shadow Realm channel: Updates channel status with list of sleeping users
+ * - Respects user voice tracking opt-in preference
+ * - On database error: Logs to CSV via logVCC for later replay
+ *
+ * Side effects:
+ * - Calls userJoinedVoice if user joined new channel
+ * - Calls userLeftVoice if user left old channel
+ * - Updates Shadow Realm channel status via channelStatusChange
+ * - May log to CSV if database fails
+ *
+ * @param {Discord.VoiceState} newMember - Voice state after change
+ * @param {Discord.VoiceState} oldMember - Voice state before change
+ */
 function voiceChannelChange(newMember, oldMember)
 {
-    const VCCChangeAsync = async function() 
+    const VCCChangeAsync = async function()
     {
         var newUserID = newMember.id;
         var oldUserID = oldMember.id;
         var newUserChannel = newMember.channelId;
         var oldUserChannel = oldMember.channelId;
-    
+
         var guild = newMember.guild;
 
         var shadowRealmChannel = babadata.testing === undefined ? "454464489681715200" : "1240062704966832209";
@@ -883,6 +1304,23 @@ function voiceChannelChange(newMember, oldMember)
     }
 }
 
+/**
+ * Checks user's opt-in status for a feature type
+ *
+ * Reads from optscache.json to determine if user has opted in/out of a feature.
+ * If user has no preference recorded, prompts them in bot channel and defaults
+ * to opt-out (opt-in for testing mode).
+ *
+ * Side effects:
+ * - May create user record via CheckAndCreateUser
+ * - May insert opt record via optIn/optOut
+ * - Sends prompt message to bot channel if user has no preference
+ *
+ * @param {Discord.Guild} guild - Discord guild object
+ * @param {string} userID - Discord user ID
+ * @param {string} val - Feature type to check (e.g., "voice")
+ * @returns {Promise<boolean>} True if opted in, false if opted out or no preference
+ */
 function userOptValue(guild, userID, val)
 {
     var PromisedOptVal = new Promise((resolve, reject) => {
@@ -941,8 +1379,24 @@ function userOptValue(guild, userID, val)
     return PromisedOptVal;
 }
 
-// Slash Friday Saving Functions ------------------------------------------------------------------------------------------------------------------------------------
+// ============================================
+// Slash Friday Saving Functions
+// ============================================
 
+/**
+ * Saves accumulated Slash Friday data to database
+ *
+ * Triggered periodically to persist in-memory Friday message counters to database.
+ * Only runs in production mode unless testingOveride is true. Calls IncrementCounters
+ * which handles both Friday counter (layersdeep table) and Friday messages (myitisfriday table).
+ *
+ * Side effects:
+ * - Calls IncrementCounters which writes to database
+ * - Clears global.fridayCounter and fridayCounter.json after successful save
+ *
+ * @param {boolean} [testingOveride=false] - If true, saves even in testing mode
+ * @returns {Promise<string>} Status message indicating success or why save was skipped
+ */
 function SaveSlashFridayJson(testingOveride = false)
 {
     var PromisedSave = new Promise((resolve, reject) =>
@@ -978,6 +1432,20 @@ function SaveSlashFridayJson(testingOveride = false)
     return PromisedSave;
 }
 
+/**
+ * Saves both Friday counters and messages to database
+ *
+ * Orchestrates saving of two types of Friday data:
+ * 1. Layer depth counters (how nested the Friday messages are)
+ * 2. Full message content for Friday messages
+ *
+ * Side effects:
+ * - Calls FridayCounterIncrement (writes to layersdeep table)
+ * - Calls FridayMessagesUpdate (writes to myitisfriday table)
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} Error description on failure
+ */
 function IncrementCounters()
 {
     const CounterAsync = async function()
@@ -1007,6 +1475,24 @@ function IncrementCounters()
     return PromisedIncrement;
 }
 
+/**
+ * Saves Friday message nesting depth counters to database
+ *
+ * Reads fridayCounter.json containing accumulated layer depth statistics for
+ * Friday messages and bulk inserts/updates to layersdeep table. Tracks how many
+ * times each user used each heading level at each nesting depth for each Friday UID.
+ *
+ * SQL: INSERT INTO layersdeep (...) AS newDeepLayers ON DUPLICATE KEY UPDATE Count = Count + newCount
+ *
+ * Side effects:
+ * - Bulk writes to layersdeep table
+ * - Clears fridayCounter.json after successful save
+ * - Clears global.fridayCounter object
+ * - On error: Sends fridayCounter.json to admin log via DMMEAFile
+ *
+ * @returns {Promise<string>} "SuccCess" or "Friday Counter Empty"
+ * @throws {string} "FridayCounter" on database error
+ */
 function FridayCounterIncrement()
 {
     var PromisedFridayCounter = new Promise((resolve, reject) =>
@@ -1071,13 +1557,30 @@ function FridayCounterIncrement()
     return PromisedFridayCounter;
 }
 
+/**
+ * Saves Friday message contents to database
+ *
+ * Reads fridaymessages.json containing full text of Friday messages and bulk
+ * inserts to myitisfriday table. Stores message text, condensed notation,
+ * timestamp, seed, and file version for each Friday message.
+ *
+ * SQL: INSERT INTO myitisfriday (Sender,TimeStamp,Message,Condensed,Seed,FileVersion) VALUES (...)
+ *
+ * Side effects:
+ * - Bulk inserts to myitisfriday table
+ * - Clears fridaymessages.json after successful save
+ * - On error: Sends fridaymessages.json to admin log via DMMEAFile
+ *
+ * @returns {Promise<string>} "SuccCess" or "Friday Messages Empty"
+ * @throws {string} "FridayMessages" on database error
+ */
 function FridayMessagesUpdate()
 {
     var PromisedFridayMessages = new Promise((resolve, reject) =>
     {
         var fridayMessages = fs.readFileSync(babadata.datalocation + "fridaymessages.json");
         var friday = JSON.parse(fridayMessages);
-    
+
         if (friday.length == 0)
         {
             resolve("Friday Messages Empty");
@@ -1138,8 +1641,30 @@ function FridayMessagesUpdate()
     return PromisedFridayMessages;
 }
 
-// Cache Functions  ------------------------------------------------------------------------------------------------------------------------------------------------
+// ============================================
+// Cache Functions
+// ============================================
 
+/**
+ * Loads all bot cache data from database to JSON files
+ *
+ * Master function that orchestrates loading all cache types sequentially.
+ * Called on bot startup to populate local cache files from database.
+ * Each cache loader queries database and writes to corresponding JSON file.
+ *
+ * Caches loaded:
+ * - Emoji, React, Fish, Frog, Frog Control, DOW Items
+ * - Channel Names (to global.channelCache), User Values (to global.userCache)
+ * - Pleased, Pleased Override, Opts, Holidays, Haikus
+ * - Friday (DOW), Friday Control, Friday Loops, Time Gates
+ *
+ * Side effects:
+ * - Writes multiple JSON cache files to babadata.datalocation
+ * - Populates global.channelCache and global.userCache objects
+ *
+ * @returns {Promise<string>} "SuccCess" when all caches loaded
+ * @throws {string} "AllCache" if any cache fails to load
+ */
 function LoadAllTheCache()
 {
     const CachceAsync = async function() 
@@ -1222,6 +1747,20 @@ function LoadAllTheCache()
     return PromisedAllCache;
 }
 
+/**
+ * Loads emoji data from external repository and groups by skin tones
+ *
+ * Fetches emoji list from GitHub repository, groups emojis with skin tone
+ * variations together, and caches to local JSON file for offline use.
+ *
+ * Side effects:
+ * - Fetches from https://raw.githubusercontent.com/chalda-pnuzig/emojis.json/
+ * - Writes to emojiJSONCache.json
+ * - Groups emoji variants by skin tone via groupEmojiByTones
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Emoji" on fetch or parse error
+ */
 function LoadEmojiCache()
 {
     var PromisedEmoji = new Promise((resolve, reject) =>
@@ -1241,6 +1780,21 @@ function LoadEmojiCache()
     return PromisedEmoji;
 }
 
+/**
+ * Loads reaction triggers from database to cache file
+ *
+ * Queries reacto table and transforms data for reaction detection system.
+ * Processes phrase triggers, alternate/ignored phrases, react emoji IDs with
+ * weighted chances, and time-based availability (with dates adjusted to current year).
+ *
+ * SQL: Select * from reacto
+ *
+ * Side effects:
+ * - Writes to REACTOcache.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "React" on database error
+ */
 function LoadReactCache()
 {
     var PromisedReact = new Promise((resolve, reject) =>
@@ -1345,6 +1899,20 @@ function LoadReactCache()
     return PromisedReact;
 }
 
+/**
+ * Loads fish image triggers from database to cache file
+ *
+ * Queries fishdb table containing fish image URLs and trigger words.
+ * Fish images are posted when specific words/phrases appear in messages.
+ *
+ * SQL: Select * from fishdb
+ *
+ * Side effects:
+ * - Writes to FISHcache.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Fish" on database error
+ */
 function LoadFishCache()
 {
     var PromisedFish = new Promise((resolve, reject) =>
@@ -1383,6 +1951,20 @@ function LoadFishCache()
     return PromisedFish;
 }
 
+/**
+ * Loads pending reminders from database to cache file
+ *
+ * Queries reminders table filtered by testing mode. Adjusts timestamps for
+ * timezone offset and structures reminder data for scheduler system.
+ *
+ * SQL: Select * from reminders where Testing = [0 or 1]
+ *
+ * Side effects:
+ * - Writes to reminders.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Reminders" on database error
+ */
 function LoadReminderCache()
 {
     var PromisedReminders = new Promise((resolve, reject) =>
@@ -1437,6 +2019,20 @@ function LoadReminderCache()
     return PromisedReminders;
 }
 
+/**
+ * Loads Wednesday frog images from database to cache file
+ *
+ * Queries frog table containing frog image links posted on Wednesdays.
+ * Each frog can be enabled/disabled and have user ID overrides.
+ *
+ * SQL: Select * from frog
+ *
+ * Side effects:
+ * - Writes to FROGcache.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Frog" on database error
+ */
 function LoadFrogCache()
 {
     var PromisedFrog = new Promise((resolve, reject) =>
@@ -1472,6 +2068,20 @@ function LoadFrogCache()
     return PromisedFrog;
 }
 
+/**
+ * Loads frog control settings from database to cache file
+ *
+ * Queries frogcontrol table containing user/channel permission levels for
+ * Wednesday frog feature. Controls who can see frogs.
+ *
+ * SQL: Select * from frogcontrol
+ *
+ * Side effects:
+ * - Writes to FROGcontrol.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "FrogControl" on database error
+ */
 function LoadFrogControlCache()
 {
     var PromisedFrogControl = new Promise((resolve, reject) =>
@@ -1505,6 +2115,20 @@ function LoadFrogControlCache()
     return PromisedFrogControl;
 }
 
+/**
+ * Loads day-of-week special items from database to cache file
+ *
+ * Queries dow and dowitems tables for special day-based content (e.g., themed
+ * words/phrases for specific days). Includes probability, time windows, and items.
+ *
+ * SQL: Select * from dow, then Select * from dowitems
+ *
+ * Side effects:
+ * - Writes to DOWItems.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "DOWItems" on database error
+ */
 function LoadDOWItemsCache()
 {
     var PromisedDOWItems = new Promise((resolve, reject) =>
@@ -1552,6 +2176,20 @@ function LoadDOWItemsCache()
     return PromisedDOWItems;
 }
 
+/**
+ * Loads channel ID to name mapping into global cache
+ *
+ * Queries channelval table and populates global.channelCache object for fast
+ * channel name lookups throughout the application.
+ *
+ * SQL: Select * from channelval
+ *
+ * Side effects:
+ * - Populates global.channelCache object
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "ChannelNames" on database error
+ */
 function LoadChannelNamesCache()
 {
     var PromisedChannelNames = new Promise((resolve, reject) =>
@@ -1575,6 +2213,20 @@ function LoadChannelNamesCache()
     return PromisedChannelNames;
 }
 
+/**
+ * Loads user ID to name mapping with alternate names into global cache
+ *
+ * Queries userval table joined with alteventnames to get primary username and
+ * alternative names (e.g., birthday event names). Populates global.userCache.
+ *
+ * SQL: SELECT * FROM userval Left join alteventnames on BirthdayEventID = EventID
+ *
+ * Side effects:
+ * - Populates global.userCache object with PersonName and AltNames array
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "UserValues" on database error
+ */
 function LoadUserValuesCache()
 {
     var PromisedUserValues = new Promise((resolve, reject) =>
@@ -1610,6 +2262,21 @@ function LoadUserValuesCache()
     return PromisedUserValues;
 }
 
+/**
+ * Loads "please" response probability settings from database to cache file
+ *
+ * Queries pleased table for user-specific response chance settings when "please"
+ * is detected in messages. Controls formatting probabilities (normal, heading levels,
+ * random font, flag emojis).
+ *
+ * SQL: SELECT ... FROM pleased Left Join userval on pleased.UserID = userval.DiscordID
+ *
+ * Side effects:
+ * - Writes to Pleasedcache.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Pleased" on database error
+ */
 function LoadPleasedCache()
 {
     var PromisedPleased = new Promise((resolve, reject) =>
@@ -1650,6 +2317,21 @@ function LoadPleasedCache()
     return PromisedPleased;
 }
 
+/**
+ * Loads "please" response overrides from database to cache file
+ *
+ * Queries pleasedOverides table for special response settings that apply when
+ * specific users say "please" to other specific users. Allows customized response
+ * probabilities per user pair.
+ *
+ * SQL: SELECT ... FROM pleasedOverides Left Join userval on pleasedOverides.UserID = userval.DiscordID
+ *
+ * Side effects:
+ * - Writes to PleasedOVERIDEcache.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "PleasedOveride" on database error
+ */
 function LoadPleasedOverideCache()
 {
     var PromisedPleasedOveride = new Promise((resolve, reject) =>
@@ -1690,6 +2372,20 @@ function LoadPleasedOverideCache()
     return PromisedPleasedOveride;
 }
 
+/**
+ * Loads user opt-in/out preferences from database to cache file
+ *
+ * Queries opting table for user preferences on various bot features (e.g., voice
+ * tracking, mentions). Used to respect user privacy choices.
+ *
+ * SQL: Select * from opting
+ *
+ * Side effects:
+ * - Writes to optscache.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Opts" on database error
+ */
 function LoadOptCache()
 {
     var PromisedOpt = new Promise((resolve, reject) =>
@@ -1722,6 +2418,24 @@ function LoadOptCache()
     return PromisedOpt;
 }
 
+/**
+ * Loads all Slash Friday data and manages versioning
+ *
+ * Comprehensive loader for Friday feature that:
+ * 1. Loads time gates, Friday phrases (DOW), control settings, and nested loops
+ * 2. Compares new data against existing cached data
+ * 3. If changes detected: creates versioned backup in FridayCache folder and updates timegates
+ * 4. Tracks all version changes in TimeGates.json and timegates table
+ *
+ * Side effects:
+ * - Calls LoadTimeGatesCache, LoadFridayCache, LoadFridayControlCache, LoadFridayLoopsCache
+ * - On changes: Writes versioned backups to FridayCache/[DOWcache|FridayLoops|DOWcontrol]N.json
+ * - Updates TimeGates.json with new version entry
+ * - Inserts new version record to timegates table
+ *
+ * @returns {Promise<string>} "SuccCess, Changes Detected" or "SuccCess, No Changes Detected"
+ * @throws {string} Error description on failure
+ */
 function LoadAllSlashFridayStuff()
 {
     var PromisedFriday = new Promise((resolve, reject) =>
@@ -1730,21 +2444,21 @@ function LoadAllSlashFridayStuff()
         let rawdata = fs.readFileSync(babadata.datalocation + "DOWcache.json");
         var tempdowcache = JSON.parse(rawdata);
         var newdowcache = null;
-    
+
         let rawloops = fs.readFileSync(babadata.datalocation + "FridayLoops.json");
         var tempfridayloops = JSON.parse(rawloops);
         var newfridayloops = null;
-    
+
         let rawcontrol = fs.readFileSync(babadata.datalocation + "DOWcontrol.json");
         var tempdowcontrol = JSON.parse(rawcontrol);
         var newdowcontrol = null;
 
-        const FridayAsync = async function() 
-        {    
+        const FridayAsync = async function()
+        {
             // Time Gates -- TimeGates.json - `Select * from timegatess`
             const TimeGatesResult = await LoadTimeGatesCache();
             console.log("Time Gates Cache: " + TimeGatesResult, false, true);
-    
+
             // Slash Friday Values -- DOWcache.json - `SELECT * FROM dowfunny left join fridaytimegates on dowfunny.UID = fridaytimegates.fUID`
             newdowcache = await LoadFridayCache();
             console.log("Friday Cache: SuccCess", false, true);
@@ -1914,6 +2628,20 @@ function LoadAllSlashFridayStuff()
     return PromisedFriday;
 }
 
+/**
+ * Loads Friday content version history from database to cache file
+ *
+ * Queries timegates table for version numbers and timestamps of all Friday
+ * content updates. Used for tracking when Friday phrases/loops changed.
+ *
+ * SQL: Select * from timegates
+ *
+ * Side effects:
+ * - Writes to TimeGates.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "TimeGates" on database error
+ */
 function LoadTimeGatesCache()
 {
     var PromisedTimeGates = new Promise((resolve, reject) =>
@@ -1953,6 +2681,21 @@ function LoadTimeGatesCache()
     return PromisedTimeGates;
 }
 
+/**
+ * Loads Slash Friday phrases from database to cache file
+ *
+ * Queries dowfunny table joined with fridaytimegates for main Friday content.
+ * Each entry contains text, heading levels, enabled status, user overrides,
+ * and time-based availability (day of week, time ranges, occurrence chances).
+ *
+ * SQL: SELECT * FROM dowfunny left join fridaytimegates on dowfunny.UID = fridaytimegates.fUID
+ *
+ * Side effects:
+ * - Writes to DOWcache.json
+ *
+ * @returns {Promise<Object[]>} Array of Friday phrase objects
+ * @throws {string} "DOWCache" on database error
+ */
 function LoadFridayCache()
 {
     var PromisedFriday = new Promise((resolve, reject) =>
@@ -2003,6 +2746,20 @@ function LoadFridayCache()
     return PromisedFriday;
 }
 
+/**
+ * Loads Friday control permissions from database to cache file
+ *
+ * Queries dowcontrol table for user/channel permission levels controlling
+ * who can see Friday content and at what intensity.
+ *
+ * SQL: Select * from dowcontrol
+ *
+ * Side effects:
+ * - Writes to DOWcontrol.json
+ *
+ * @returns {Promise<Object[]>} Array of control setting objects
+ * @throws {string} "DOWControl" on database error
+ */
 function LoadFridayControlCache()
 {
     var PromisedFridayControl = new Promise((resolve, reject) =>
@@ -2037,6 +2794,21 @@ function LoadFridayControlCache()
     return PromisedFridayControl;
 }
 
+/**
+ * Loads Friday nested loop replacements from database to cache file
+ *
+ * Queries fridaynestedloops table for text substitution groups used in Friday
+ * messages. Groups replaceable text by weight for weighted random selection.
+ * Processes weights to create proper random distribution (e.g., weight 2 = included twice).
+ *
+ * SQL: Select * from fridaynestedloops
+ *
+ * Side effects:
+ * - Writes to FridayLoops.json
+ *
+ * @returns {Promise<Object>} Object with group names as keys, arrays of weighted text as values
+ * @throws {string} "FridayLoops" on database error
+ */
 function LoadFridayLoopsCache()
 {
     var PromisedFridayLoops = new Promise((resolve, reject) =>
@@ -2106,6 +2878,21 @@ function LoadFridayLoopsCache()
     return PromisedFridayLoops;
 }
 
+/**
+ * Loads holiday/special event data from database to cache file
+ *
+ * Queries event table joined with alteventnames for holidays, birthdays, and
+ * special occasions. Includes event names, dates (fixed or relative), and frog
+ * association for Baba Wednesday feature.
+ *
+ * SQL: SELECT * FROM event left join alteventnames on event.EventID = alteventnames.EventID
+ *
+ * Side effects:
+ * - Writes to HolidayFrogs.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Holidays" on database error
+ */
 function LoadHolidaysCache()
 {
     var PromisedHolidays = new Promise((resolve, reject) =>
@@ -2147,12 +2934,27 @@ function LoadHolidaysCache()
     return PromisedHolidays;
 }
 
+/**
+ * Loads detected haikus from database to cache file
+ *
+ * Queries haiku table joined with user and channel data for all haikus ever
+ * detected in messages. Includes raw text, formatted version, accidental flag,
+ * timestamp, message URL, author, and channel.
+ *
+ * SQL: SELECT * FROM haiku Left Join userval... Left Join channelval...
+ *
+ * Side effects:
+ * - Writes to HaikusCache.json
+ *
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Haikus" on database error
+ */
 function LoadHaikusCache()
 {
     var PromisedHaikus = new Promise((resolve, reject) =>
     {
         var query = `SELECT * FROM haiku
-                     Left Join userval on haiku.PersonName = userval.PersonName 
+                     Left Join userval on haiku.PersonName = userval.PersonName
                      Left Join channelval on haiku.ChannelID = channelval.ChannelID`;
         var jsonLocation = babadata.datalocation + "HaikusCache.json";
 
@@ -2195,6 +2997,24 @@ function LoadHaikusCache()
     return PromisedHaikus;
 }
 
+/**
+ * Updates control level for DOW or FROG features
+ *
+ * Generic function to set permission level for user/channel in control tables.
+ * After updating, reloads relevant cache to apply changes immediately.
+ *
+ * SQL: Select from [dow|frog]control, then INSERT or UPDATE
+ *
+ * Side effects:
+ * - Inserts or updates record in dowcontrol or frogcontrol table
+ * - Triggers LoadAllSlashFridayStuff or LoadFrogCache to refresh cache
+ *
+ * @param {string} id - User or channel ID
+ * @param {string} level - Control level value
+ * @param {string} prefix - "DOW" for Friday or "FROG" for Wednesday frogs
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "[dow|frog]Control" on database error
+ */
 function controlDOW(id, level, prefix)
 {
 	var lcx = prefix.toLowerCase();
@@ -2230,8 +3050,20 @@ function controlDOW(id, level, prefix)
     return PromisedControlDOW;
 }
 
-// Emoji Functions  --------------------------------------------------------------------------------------------------------------------------------------------------
+// ============================================
+// Emoji Helper Functions
+// ============================================
 
+/**
+ * Finds emoji object by name in grouped emoji list
+ *
+ * Helper for groupEmojiByTones to locate emoji entries by name during
+ * skin tone variant grouping.
+ *
+ * @param {Object[]} emojiList - Array of emoji objects
+ * @param {string} emojiName - Emoji name to search for
+ * @returns {Object|null} Emoji object if found, null otherwise
+ */
 function getGroupedEmoji(emojiList, emojiName)
 {
     for (var i = 0; i < emojiList.length; i++)
@@ -2246,6 +3078,23 @@ function getGroupedEmoji(emojiList, emojiName)
     return null;
 }
 
+/**
+ * Groups emoji variants with skin tones under base emoji
+ *
+ * Processes emoji list to consolidate skin tone variants under their base emoji.
+ * For example, all "thumbs up" skin tone variants are grouped under base "thumbs up".
+ * Removes skin tone suffix from name and adds variant to parent's emojis array.
+ *
+ * Skin tone patterns removed:
+ * - "light skin tone"
+ * - "medium-light skin tone"
+ * - "medium skin tone"
+ * - "medium-dark skin tone"
+ * - "dark skin tone"
+ *
+ * @param {Object} emojiList - Emoji list object with emojis array
+ * @returns {Object[]} Grouped emoji array with skin tone variants nested
+ */
 function groupEmojiByTones(emojiList)
 {
     var list = emojiList.emojis;
@@ -2300,8 +3149,25 @@ function groupEmojiByTones(emojiList)
     return grouped;
 }
 
-// Hurricane Functions  ----------------------------------------------------------------------------------------------------------------------------------------------
+// ============================================
+// Hurricane Tracking Functions
+// ============================================
 
+/**
+ * Saves updated hurricane data from JSON cache to database
+ *
+ * Reads hurricanes.json and writes any hurricanes marked as Updated=true to
+ * database. Uses INSERT...ON DUPLICATE KEY UPDATE to handle both new and
+ * existing hurricanes.
+ *
+ * SQL: Insert into hurricane (...) ON DUPLICATE KEY UPDATE name = ..., type = ..., category = ..., lastupdated = ...
+ *
+ * Side effects:
+ * - Inserts or updates records in hurricane table
+ * - Sets Updated flag to false after saving
+ *
+ * @returns {Promise<void>} Resolves when all updates saved
+ */
 async function saveUpdatedHurrInfo()
 {
 	return new Promise((resolve, reject) => 
@@ -2353,6 +3219,21 @@ async function saveUpdatedHurrInfo()
 	});
 }
 
+/**
+ * Retrieves current year hurricane data from database
+ *
+ * First saves any pending updates via saveUpdatedHurrInfo, then queries
+ * hurricane table for current year's hurricanes. Filters to current year only
+ * and adjusts timestamps for timezone.
+ *
+ * SQL: Select * from hurricane
+ *
+ * Side effects:
+ * - Calls saveUpdatedHurrInfo to persist pending changes
+ * - Writes filtered results to hurricanes.json
+ *
+ * @returns {Promise<void>} Resolves after hurricane data refreshed
+ */
 async function getHurricaneInfo()
 {
 	return new Promise((resolve, reject) =>
@@ -2417,8 +3298,26 @@ async function getHurricaneInfo()
 	});
 }
 
-// Reminder Functions  -----------------------------------------------------------------------------------------------------------------------------------------------
+// ============================================
+// Reminder Database Functions
+// ============================================
 
+/**
+ * Adds new reminder to database
+ *
+ * Inserts reminder record with source channel, message content, files, target
+ * date/time, and user preferences. Testing flag determines which bot environment
+ * the reminder belongs to.
+ *
+ * SQL: Insert into reminders (Source, Message, UserID, Files, Date, ChannelID, ThreadParentID, EnabledAtPerson, ID, Testing) VALUES (...)
+ *
+ * Side effects:
+ * - Inserts record in reminders table
+ *
+ * @param {Object} reminderItem - Reminder object with properties: Source, Message, UserID, Files, Date, ChannelID, ThreadParentID, EnableAtPerson, ID
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Reminder Add" on database error
+ */
 function AddReminderToDB(reminderItem)
 {
     var fileString = "";
@@ -2447,6 +3346,21 @@ function AddReminderToDB(reminderItem)
     });
 }
 
+/**
+ * Updates existing reminder in database
+ *
+ * Modifies all fields of reminder record identified by ID. Used when user
+ * reschedules or modifies reminder content.
+ *
+ * SQL: Update reminders Set Source = ..., Message = ..., Files = ..., Date = ..., ChannelID = ..., ThreadParentID = ..., EnabledAtPerson = ... WHERE ID = ...
+ *
+ * Side effects:
+ * - Updates record in reminders table
+ *
+ * @param {Object} reminderItem - Reminder object with all properties including ID
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Reminder Edit" on database error
+ */
 function EditReminderInDB(reminderItem)
 {
     var fileString = "";
@@ -2466,7 +3380,7 @@ function EditReminderInDB(reminderItem)
 
         var query = `Update reminders Set Source = "${reminderItem.Source}", Message = "${reminderItem.Message}", Files = "${fileString}", Date = "${dtsrart}", ChannelID = "${reminderItem.ChannelID}", ThreadParentID = "${threadParentID}", EnabledAtPerson = ${reminderItem.EnableAtPerson} WHERE ID = "${reminderItem.ID}"`;
         callSQLQuery(query)
-        .then(() => 
+        .then(() =>
         {
             resolve("SuccCess");
         })
@@ -2474,13 +3388,27 @@ function EditReminderInDB(reminderItem)
     });
 }
 
+/**
+ * Deletes reminder from database
+ *
+ * Removes reminder record by ID when user cancels or after reminder fires.
+ *
+ * SQL: Delete from reminders WHERE ID = ...
+ *
+ * Side effects:
+ * - Deletes record from reminders table
+ *
+ * @param {Object} reminderItem - Reminder object containing at minimum the ID property
+ * @returns {Promise<string>} "SuccCess" on completion
+ * @throws {string} "Reminder Delete" on database error
+ */
 function DeleteReminderInDB(reminderItem)
 {
     return new Promise((resolve, reject) =>
     {
         var query = `Delete from reminders WHERE ID = "${reminderItem.ID}"`;
         callSQLQuery(query)
-        .then(() => 
+        .then(() =>
         {
             resolve("SuccCess");
         })

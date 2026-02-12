@@ -1,3 +1,23 @@
+/**
+ * @fileoverview Command Implementation Functions for Baba Discord Bot
+ *
+ * Contains the core implementation logic for 40+ bot commands including:
+ * - Friday frog system with birthday overlays
+ * - Random number generation and "please" responses
+ * - Haiku database search and display
+ * - Weather and hurricane tracking
+ * - Aurora borealis forecasts
+ * - Holiday progress bars and countdowns
+ * - Calendar integration
+ * - YUGO car Easter egg
+ * - Various fun commands (cat, pizza, coin flip, etc.)
+ *
+ * These functions are called by slash command handlers in /Commands directory.
+ * Most functions return Discord message objects with {content, embeds, files} structure.
+ *
+ * @module commandFunctions
+ */
+
 var babadata = require('../babotdata.json'); //baba configuration file
 
 const fs = require('fs');
@@ -16,6 +36,23 @@ const { normalizeMSG } = require("./HelperFunctions/dbHelpers.js");
 
 const options = { year: 'numeric', month: 'long', day: 'numeric' }; // for date parsing to string
 
+/**
+ * Generates Friday frog image with optional birthday celebration overlay
+ *
+ * If today is someone's birthday (global.BirthdayToday), overlays their name(s)
+ * on the Friday image using Jimp at coordinates (500, 235) centered. Otherwise
+ * returns static Friday.jpg. For fake Friday detection, shows different alt text.
+ *
+ * Uses Jimp to:
+ * - Load Friday.jpg base image
+ * - Load FONT_SANS_32_BLACK font
+ * - Calculate centered text position
+ * - Print birthday names with " Edition!" suffix
+ * - Convert to JPEG buffer
+ *
+ * @param {boolean} [isFake=false] - If true, shows "YOU THINK IT IS FRIDAY??" message
+ * @returns {Object} Discord message object with content and Friday image attachment
+ */
 async function babaFriday(isFake = false)
 {
     alttext = isFake ? "YOU THINK IT IS FRIDAY??" : "Baba Friday Image, As it is ALWAYS Friday!"
@@ -51,12 +88,36 @@ async function babaFriday(isFake = false)
     return { content: "FRIDAY!", files: [newFile] };
 }
 
+/**
+ * Generates random number within specified range with optional spoiler formatting
+ *
+ * Uses Math.random() to generate inclusive random integer between min and max.
+ * If spoiler is true, wraps result in Discord spoiler tags (||number||).
+ *
+ * @param {number} min - Minimum value (inclusive)
+ * @param {number} max - Maximum value (inclusive)
+ * @param {boolean} spoiler - If true, wraps number in Discord spoiler tags
+ * @returns {Object} Discord message object with content property containing the random number
+ */
 function babaRNG(min, max, spoiler)
 {
     var num = Math.floor(Math.random() * (max - min + 1)) + min;
     return { content: "Your Random Number is: " + (spoiler ? "||" : "")  + num + (spoiler ? "||" : "") };
 }
 
+/**
+ * Returns random response when user says "please" to Baba
+ *
+ * RNG logic with weighted probabilities:
+ * - 2% chance: "AAAAAAAAAAA" (panic response)
+ * - 13% chance: "BABA IS HAPPY!"
+ * - 30% chance: "BABA IS THANKS!"
+ * - 23% chance: "BABA IS PLEASED!"
+ * - 1% chance: "Nice!" (when roll is exactly 69)
+ * - ~31% chance: undefined/no response
+ *
+ * @returns {Object|undefined} Discord message object with content, or undefined
+ */
 function babaPlease()
 {
     var num = Math.floor(Math.random() * 100); //pick a random one
@@ -72,11 +133,25 @@ function babaPlease()
         return { content: "Nice!" };
 }
 
+/**
+ * Placeholder for future pizza ordering feature
+ *
+ * @returns {Object} Discord message object with coming soon message
+ */
 function babaPizza()
 {
     return { content: "Baba Pizza Ordering Service™ coming soon!" };
 }
 
+/**
+ * Generates random progress bar with specified length
+ *
+ * Delegates to progressSimple helper function to create ASCII progress bar
+ * with random completion percentage.
+ *
+ * @param {number} [n=20] - Length of progress bar in characters
+ * @returns {Object} Discord message object with progress bar content
+ */
 function babaProgress(n = 20)
 {
     var pb = progressSimple(n);
@@ -84,6 +159,17 @@ function babaProgress(n = 20)
     return { content: pb };
 }
 
+/**
+ * Generates comprehensive help text listing all available Baba commands
+ *
+ * Displays command syntax and descriptions for:
+ * - Server utilities (password, vibe flag, yugo)
+ * - Haiku system (random, by person, purity tracking)
+ * - Holiday/date commands (wednesday, days until, when is, day of week)
+ * - Fun commands (friday, pizza, please)
+ *
+ * @returns {Object} Discord message object with formatted help text in code block
+ */
 function babaHelp()
 {
     var helptext = "BABA IS HELP"
@@ -105,7 +191,7 @@ function babaHelp()
     helptext += "\n" + "- !baba days until {holiday} - Displays how many days until specified holiday!"
     helptext += "\n" + "- !baba when is {holiday} - Displays the exact date of the specified holiday!"
     helptext += "\n" + "- !baba day of week {holiday} - Displays what day of week the specified holiday is!";
-    
+
     helptext += "\n" + "- !baba friday - Displays the friday image!";
     helptext += "\n" + "- !baba order pizza - Baba will order you a pizza (coming soon)!";
     helptext += "\n" + "- !baba please - >:(";
@@ -114,6 +200,20 @@ function babaHelp()
     return { content: helptext };
 }
 
+/**
+ * Generates daily Night Shift/Vibe Time flag based on seeded RNG algorithm
+ *
+ * Calculates which of 7 flag variants to show based on:
+ * - Current date adjusted for Wednesday-shifted calendar
+ * - Seed calculation: (date % 9) + (month % 5)
+ * - Lookup through 7x7 matrix of flag indices
+ * - Final index: locals[seed % 7][(dayOfWeek + adjustedDate) % 7]
+ *
+ * The algorithm ensures same flag shows for entire day but varies by date.
+ * Flag images stored in /Flags/ directory as Night_Shift_0.png through Night_Shift_6.png.
+ *
+ * @returns {Object} Discord message object with "BABA IS AT VIBE TIME" and flag image attachment
+ */
 function babaVibeFlag()
 {
     var d1 = getD1();
@@ -127,7 +227,7 @@ function babaVibeFlag()
 
     var locals = [ //another thing hank doesnt like, but it is needed
         [0,1,2,3,4,5,6],
-        [6,5,4,3,2,1,0], 
+        [6,5,4,3,2,1,0],
         [1,3,5,0,2,4,6],
         [0,2,4,6,5,3,1],
         [0,4,5,1,2,6,2],
@@ -136,33 +236,59 @@ function babaVibeFlag()
     ]
 
     var sood = locals[seed % 7][(d1.getDay() + d1_useage.getDate()) % 7]; // "the mommy number and daddy numbers get drunk and invite cousins" - Caden 2021
-    
+
     // var newAttch = new Discord.MessageAttachment().setFile(); //makes a new discord attachment
-    var newFile = new Discord.AttachmentBuilder(babadata.datalocation + "Flags/" + "Night_Shift_" + sood + ".png", 
+    var newFile = new Discord.AttachmentBuilder(babadata.datalocation + "Flags/" + "Night_Shift_" + sood + ".png",
         { name: 'NightShift.png', description : "This one is indexed as " + sood + "!" });
 
     return {content: flagtext, files: [newFile] };
-    
+
 }
 
+/**
+ * Returns random Yugo car image from collection
+ *
+ * Selects random image from 11 yugo images (0.jpg through 10.jpg) in /Yugo/ directory.
+ * Images are Yugo cars, a notoriously unreliable Yugoslavian automobile.
+ *
+ * @returns {Object} Discord message object with "Here Yugo!" text and random yugo image attachment
+ */
 function babaYugo()
 {
     var yugotext = "Here Yugo!";
     var num = Math.floor(Math.random() * 11); //pick a random one
-    var yugo = new Discord.AttachmentBuilder(babadata.datalocation + "Yugo/" + num.toString() + ".jpg", 
+    var yugo = new Discord.AttachmentBuilder(babadata.datalocation + "Yugo/" + num.toString() + ".jpg",
         { name: 'Yugo.jpg', description : "This is yugo number " + num + "!\nHere Yugo, Get IT, GET IT! HHUEHUEHEUHEHEUEUEHUEHUEHUE!" });
 
     return { content: yugotext, files: [yugo] };
 }
 
+/**
+ * Returns random repost meme image when content is detected as repost
+ *
+ * Selects from 5 repost images (0.png through 4.png) in /Repost/ directory.
+ * Used when bot detects duplicate content (awaiting Jeremy's repost detector implementation).
+ *
+ * @returns {Object} Discord message object with random repost meme image attachment
+ */
 function babaRepost()
 {
     var num = Math.floor(Math.random() * 5); //pick a random one
-    var reppy = new Discord.AttachmentBuilder(babadata.datalocation + "Repost/" + num.toString() + ".png", 
+    var reppy = new Discord.AttachmentBuilder(babadata.datalocation + "Repost/" + num.toString() + ".png",
         { name: 'Repost.png', description : "This is repost number " + num + "!\nWhen will jeremy finish his report detector?"});
     return { files: [reppy] };
 }
 
+/**
+ * Extracts URL buttons from haiku message components and rebuilds them
+ *
+ * Scans through Discord message components to find URL-style buttons (style 5)
+ * and recreates them as "View Source" buttons for haiku messages. This preserves
+ * links to original messages where haikus were detected.
+ *
+ * @param {Array} cont - Array of Discord ActionRow components from previous message
+ * @returns {Array} Array of ActionRow arrays containing reconstructed URL buttons
+ */
 function babaHaikuLinks(cont)
 {
     var deadData = [];
@@ -175,7 +301,7 @@ function babaHaikuLinks(cont)
             var row = new Discord.ActionRowBuilder();
             var URLButton = new Discord.ButtonBuilder().setURL(cont[i].components[0].components[cpu.length - 1].data.url).setLabel("View Source").setStyle(5);
             row.addComponents(URLButton);
-            
+
             var cpu2 = [row];
             deadData.push(cpu2);
         }
@@ -184,6 +310,26 @@ function babaHaikuLinks(cont)
     return deadData;
 }
 
+/**
+ * Generates Discord embed for haiku display or purity list
+ *
+ * Two modes of operation:
+ * 1. Purity mode (purity=true): Shows haiku purity statistics for users/channels/dates
+ *    - Formats purity list from database
+ *    - Groups by users, channels, or dates based on msgContent[6]
+ *    - Supports pagination via pagestuff
+ * 2. Haiku mode (purity=false): Displays random haiku from database
+ *    - Selects haiku via HaikuSelection based on filters
+ *    - Formats as embed via EmbedHaikuGen
+ *
+ * Message content normalization depends on mode (mode 4 requires array iteration).
+ *
+ * @param {boolean} purity - If true, show purity list; if false, show haiku
+ * @param {number} mode - Selection mode for database query
+ * @param {string|Array} msgContent - Filter criteria (string or array based on mode)
+ * @param {Object} pagestuff - Pagination settings with ipp (items per page) property
+ * @returns {Array} Array of Discord message objects with embeds
+ */
 function babaHaikuEmbed(purity, mode, msgContent, pagestuff)
 {
     if (mode != 4)
@@ -196,7 +342,7 @@ function babaHaikuEmbed(purity, mode, msgContent, pagestuff)
                 msgContent[i] = normalizeMSG(msgContent[i]);
         }
     }
-    
+
     if (purity)
     {
         var hpl = {"retstring": ["No Haiku Purity Found!"], "total": 1};
@@ -208,7 +354,7 @@ function babaHaikuEmbed(purity, mode, msgContent, pagestuff)
         bonust += (msgContent[6] == "chans" ? "Channels" : (msgContent[6] == "dates" ? "Dates" : "Users"));
         var result = HaikuSelection(msgContent, mode);
 
-        if (result == null) 
+        if (result == null)
         {
             haifou = true;
             return [{content: "Result was null, something may have gone wrong, or no Haikus were found!"}];
@@ -227,7 +373,7 @@ function babaHaikuEmbed(purity, mode, msgContent, pagestuff)
             return EmbedPurityGen(hpl, bonust, bonupr, pagestuff);
     }
     else
-    { 
+    {
         var haikussimnames = HaikuSelection(msgContent, mode);
         if (haikussimnames == null) return [{content: "No Haiku Found, or the DB is Disabled!"}];
 
@@ -239,6 +385,29 @@ function babaHaikuEmbed(purity, mode, msgContent, pagestuff)
     }
 }
 
+/**
+ * Generates paginated Discord embeds for haiku purity statistics
+ *
+ * Creates multi-page embeds showing haiku purity data with:
+ * - Filter summary (users, channels, keywords, date ranges)
+ * - Pagination buttons (Previous/Next) if multiple pages needed
+ * - Random hex color generation (50% chance of 0 or F for each digit)
+ * - Footer with Baba icon and page numbers
+ *
+ * Filter parsing from msgContent array:
+ * - [0]: start date, [1]: end date, [2]: channels, [3]: persons
+ * - [4]: keywords, [5]: unused, [6]: grouping type
+ *
+ * Date ranges support exact dates or wildcard patterns (ANY Month/Day/Year).
+ * Uses global.userCache and global.channelCache for ID-to-name resolution.
+ *
+ * @param {Object} hpl - Haiku purity list with retstring array and total count
+ * @param {string} bonust - Bonus title text (e.g., " List for Channels")
+ * @param {string} bonupr - Bonus prefix text (currently unused)
+ * @param {Object} pagestuff - Pagination config with ipp (items per page)
+ * @param {Array} [msgContent] - Filter criteria array, optional
+ * @returns {Array} Array of Discord message objects with embeds and pagination components
+ */
 function EmbedPurityGen(hpl, bonust, bonupr, pagestuff, msgContent)
 {
     var objs = [];
@@ -266,7 +435,7 @@ function EmbedPurityGen(hpl, bonust, bonupr, pagestuff, msgContent)
                 if (ppl2s[1] != "")
                 {
                     var ids = ppl2s[1].split(",");
-                    
+
                     cont += "\t-> " + ids.map(id => global.userCache[id].PersonName).join(", ") + "\n";
                 }
                 if (ppl2s[0] != "")
@@ -306,7 +475,7 @@ function EmbedPurityGen(hpl, bonust, bonupr, pagestuff, msgContent)
                             startDate = endDate;
                             endDate = temp;
                         }
-                        
+
                         cont += "From: " + d1.toLocaleDateString('en-US', options) + "\n";
                         cont += "To: " + d2.toLocaleDateString('en-US', options) + "\n";
                     }
@@ -323,15 +492,15 @@ function EmbedPurityGen(hpl, bonust, bonupr, pagestuff, msgContent)
                         var year = startDate.year;
                         var month = startDate.month;
                         var day = startDate.day;
-                        
+
                         month = (month == 0) ? month = "ANY Month" : monthFromInt(month)
                         day = (day == 0) ? day = "ANY Day" : day;
                         year = (year == 0) ? year = "ANY Year" : year;
-                        
+
                         cont += "Occuring On Any Instance of: " + `${month} ${day}, ${year}` + "\n";
                     }
                 }
-            } 
+            }
 
             //remove last newline
             cont = cont.substring(0, cont.length - 1);
@@ -344,11 +513,11 @@ function EmbedPurityGen(hpl, bonust, bonupr, pagestuff, msgContent)
         }
 
         var footer = "Haikus by Baba!";
-        if (pagetotal > 1) 
+        if (pagetotal > 1)
         {
             footer += " - Page " + (1 + e) + " of " + pagetotal;
             var row = new Discord.ActionRowBuilder();
-            
+
             var pButton = new Discord.ButtonBuilder().setCustomId("page"+(e - 1)).setLabel("Previous").setStyle(1);
             var nButton = new Discord.ButtonBuilder().setCustomId("page"+(1 + e)).setLabel("Next").setStyle(1);
             if (e == 0)
@@ -359,11 +528,11 @@ function EmbedPurityGen(hpl, bonust, bonupr, pagestuff, msgContent)
             {
                 nButton.setDisabled(true);
             }
-    
+
             row.addComponents(pButton, nButton);
             obj.components = [row];
         }
-    
+
         var footobj = {
             text : footer,
             iconURL : "https://media.discordapp.net/attachments/574840583563116566/949515044746559568/JSO3bX0V.png"
@@ -377,11 +546,20 @@ function EmbedPurityGen(hpl, bonust, bonupr, pagestuff, msgContent)
         obj.embeds = [exampleEmbed];
         objs.push(obj);
     }
-    
+
     return objs;
 }
 
 
+/**
+ * Calculates days until next Wednesday or since last Wednesday
+ *
+ * Shifts week to make Wednesday = 0, calculates difference from current day.
+ * Uses modulo arithmetic: (currentDay + 4) % 7 to shift Sunday=0 to Wednesday=0.
+ *
+ * @param {number} [since=1] - If 1, counts forward to next Wednesday; if -1, counts backward to last
+ * @returns {Object} Discord message object with day count until/since Wednesday
+ */
 function babaDayNextWed(since = 1)
 {
     var seven  = 7 * since;
@@ -391,15 +569,24 @@ function babaDayNextWed(since = 1)
     var dtnw = ""
     var ct = Math.abs(seven - dow_d1);
     if (ct > 7) ct -= 7;
-    
+
     if (ct == 1)
         dtnw = "\nIt is only " + ct + " day " + (since == 1 ? "until" : "since") + " the " + (since == 1 ? "next" : "last") + " Wednesday!"
     else
         dtnw = "\nIt is only " + ct + " days " + (since == 1 ? "until" : "since") + " the " + (since == 1 ? "next" : "last") + " Wednesday!"
-        
+
     return { content: dtnw };
 }
 
+/**
+ * Generates random adjective-animal combination string
+ *
+ * Loads adjectives and animals arrays from data.json, selects one random entry
+ * from each, removes spaces from animal name, concatenates as single word.
+ * Returns in code block formatting. Used for random username generation.
+ *
+ * @returns {Object} Discord message object with random adjective+animal in code block
+ */
 function babaJeremy()
 {
     var data = JSON.parse(fs.readFileSync(babadata.datalocation + "data.json", {encoding:'utf8', flag:'r'}));
@@ -409,6 +596,41 @@ function babaJeremy()
     return { content: "```" + adjective + animal + "```" };
 }
 
+/**
+ * Generates holiday/event countdown images with multiple display modes
+ *
+ * Complex multi-mode function supporting:
+ * - Wednesday frog countdown images (weeks until holiday)
+ * - Custom day-of-week countdowns (any day, not just Wednesday)
+ * - Text-only modes: "when is", "days until", "days since", "day of week"
+ * - Special keywords: "next event", "next birthday", "eves" (eve repetition)
+ * - Date input parsing and holiday database lookups
+ *
+ * Image generation (Wednesday mode):
+ * - Uses Jimp to composite base image + text overlay
+ * - Calculates weeks between Wednesday-adjusted dates
+ * - Generates custom output images: outputfrog_N.png
+ * - Falls back to error.png if holiday image missing
+ * - Shows special images when event is today (holidayname.png)
+ *
+ * Date calculations:
+ * - Adjusts current date and target date to same day-of-week baseline
+ * - Divides time difference by (3600000ms * 24hrs * 7days) for weeks
+ * - Rounds weeks < 0.3 to 0 (same week threshold)
+ *
+ * Text modes via msgContent keywords:
+ * - "when is": Discord timestamp of event date
+ * - "when isnt": Random fake date ±364 days ±5 years
+ * - "days until": Relative time with day count if >31 days
+ * - "days since": Same as above but for past events
+ * - "day of week": Day name (Monday, Tuesday, etc.)
+ * - "eves": Repeats "eve " for each day, max 450 per message block
+ *
+ * @param {string} msgContent - Message text containing holiday name and mode keywords
+ * @param {Object} author - Discord user object (currently unused)
+ * @param {string} DOWChosen - Day of week code: "01"-"07" or "00" for auto-detect
+ * @returns {Array} Array of Discord message objects with text and/or frog images
+ */
 async function babaUntilHolidays(msgContent, author, DOWChosen)
 {
     msgContent = normalizeMSG(msgContent);
@@ -746,6 +968,15 @@ async function babaUntilHolidays(msgContent, author, DOWChosen)
     return outs;
 }
 
+/**
+ * Looks up user's real name or nickname from database
+ *
+ * Queries database via NameFromUser to get stored display name for Discord user.
+ * Used to retrieve preferred names or real names associated with user IDs.
+ *
+ * @param {Object} user - Discord user object with id and username properties
+ * @returns {string} Message indicating user's name or error if not found
+ */
 async function babaWhomst(user)
 {
     var result = await NameFromUser(user);
@@ -765,6 +996,28 @@ async function babaWhomst(user)
     }
 }
 
+/**
+ * Fetches hurricane tracking image from NOAA with name-based lookup
+ *
+ * External API call to https://www.nhc.noaa.gov/xgtwo/two_atl_7d0.png (default)
+ * or specific hurricane image if name provided. Downloads image to temp directory
+ * via HTTPS stream and returns via callback.
+ *
+ * Hurricane lookup process:
+ * - Searches checkHurricaneStuff for exact name match or letter match
+ * - Checks hurricane.json database for cached entries
+ * - If name provided, retrieves specific hurricane image URL
+ * - Falls back to Atlantic basin overview if no name match
+ *
+ * Hurricane info includes:
+ * - Category (Cat 1-5 or N/A)
+ * - Type (Tropical Storm, Hurricane, Depression)
+ * - Name (official designation)
+ * - Override text for fuzzy matches or numbered searches
+ *
+ * @param {string} hurricanename - Name of hurricane to look up, or empty for all
+ * @param {Function} callback - Called with Discord message object after download completes
+ */
 async function babaHurricane(hurricanename, callback)
 {
     var tempFilePath = babadata.temp + "hurricane.png";
@@ -812,20 +1065,20 @@ async function babaHurricane(hurricanename, callback)
             binus = hfull;
         }
     }
-    
+
     console.log(url);
 
     const request = https.get(url, function(response) {
        response.pipe(file);
-    
+
        // after download completed close filestream
         file.on("finish", () => {
             file.close();
             console.log("Download Completed for " + hurricanename);
 
             var vv = hfull === undefined ? " for all Hurricanes" : hfull;
-           
-            var newAttch = new Discord.AttachmentBuilder(tempFilePath, 
+
+            var newAttch = new Discord.AttachmentBuilder(tempFilePath,
                 { name: vv + '.png', description : "Hurricane Info" + vv}); //makes a new discord attachment
 
            callback({ content: "Baba Hurricane Info" + binus, files: [newAttch] });
@@ -833,6 +1086,17 @@ async function babaHurricane(hurricanename, callback)
     });
 }
 
+/**
+ * Fetches AI-generated cat image from thiscatdoesnotexist.com
+ *
+ * External API call to https://thiscatdoesnotexist.com/ which serves
+ * GAN-generated cat images. Downloads image to temp directory via HTTPS
+ * stream and returns via callback.
+ *
+ * Note: Reuses hurricane.png filename in temp directory
+ *
+ * @param {Function} callback - Called with Discord message object after download completes
+ */
 function babaCat(callback)
 {
     var tempFilePath = babadata.temp + "hurricane.png";
@@ -843,7 +1107,7 @@ function babaCat(callback)
 
     const request = https.get(url, function(response) {
        response.pipe(file);
-    
+
        // after download completed close filestream
        file.on("finish", () => {
            file.close();
@@ -854,6 +1118,24 @@ function babaCat(callback)
     });
 }
 
+/**
+ * Fetches weather forecast image from wttr.in API for specified city
+ *
+ * External API call to https://wttr.in/ or https://v2.wttr.in/ depending on mode.
+ * Downloads weather PNG image to temp directory and returns via callback.
+ * Includes error handling for failed requests.
+ *
+ * Modes:
+ * - "four": Standard 4-day forecast from wttr.in (default)
+ * - "deets": Detailed forecast from v2.wttr.in with more metrics
+ *
+ * URL encoding: Replaces spaces in city name with %20 for proper API format.
+ * Units: Always uses imperial units (?u parameter)
+ *
+ * @param {string} mode - Weather display mode: "four" or "deets"
+ * @param {string} city - City name for weather lookup (spaces allowed)
+ * @param {Function} callback - Called with Discord message object or error after download
+ */
 function babaWeather(mode, city, callback)
 {
     //TODO: add check if site down
@@ -871,13 +1153,13 @@ function babaWeather(mode, city, callback)
 
     const request = https.get(url, function(response) {
        response.pipe(file);
-    
+
        // after download completed close filestream
        file.on("finish", () => {
            file.close();
            console.log("Download Completed for Weather");
 
-           var newAttch = new Discord.AttachmentBuilder(tempFilePath, 
+           var newAttch = new Discord.AttachmentBuilder(tempFilePath,
                { name: city + '.png', description : "Weather info for " + city}); //makes a new discord attachment
 
            callback({ content: "Baba Weather", files: [newAttch] });
@@ -887,6 +1169,26 @@ function babaWeather(mode, city, callback)
     });
 }
 
+/**
+ * Schedules reminder message to be sent at specified time/date
+ *
+ * Parses time string (e.g., "3:30pm") and optional date to calculate delay.
+ * If time has passed today and no date given, schedules for tomorrow.
+ * Creates scheduled reminder via reverseDelay system.
+ *
+ * Time calculation steps:
+ * 1. Parse time string to Date object (today at that time)
+ * 2. Parse optional date string to get target date
+ * 3. Combine date + time or default to today/tomorrow
+ * 4. Calculate milliseconds from now
+ * 5. Schedule via reverseDelay
+ *
+ * @param {string} message - Reminder message content to send later
+ * @param {string} time - Time string (e.g., "3:30pm", "14:30")
+ * @param {string} [date] - Optional date string for future dates
+ * @param {Object} interaction - Discord interaction object with guild and channel info
+ * @returns {Date} Scheduled reminder date/time
+ */
 async function babaRemind(message, time, date, interaction)
 {
     var theTime = getTimeFromString(time); // returns Date object for today at that time
@@ -895,7 +1197,7 @@ async function babaRemind(message, time, date, interaction)
 
     if (date != null)
     {
-        var parsedDate = FindDate(date); 
+        var parsedDate = FindDate(date);
         theDate = new Date(parsedDate.year, parsedDate.month - 1, parsedDate.day);
         // Set the time part
         theDate.setHours(theTime.getHours(), theTime.getMinutes(), theTime.getSeconds(), theTime.getMilliseconds());
@@ -922,35 +1224,59 @@ async function babaRemind(message, time, date, interaction)
     return theDate;
 }
 
+/**
+ * Fetches aurora borealis forecast image from NOAA Space Weather Prediction Center
+ *
+ * External API call to https://services.swpc.noaa.gov/experimental/images/aurora_dashboard/
+ * Downloads aurora forecast PNG showing predicted visibility viewline for specified time.
+ * Returns via callback after download completes.
+ *
+ * Time parameter determines forecast period (e.g., "now", "30min", "60min").
+ * Shows geographic viewline of where aurora may be visible.
+ *
+ * @param {string} time - Forecast time period identifier
+ * @param {Function} callback - Called with Discord message object after download completes
+ */
 function babaAurora(time, callback)
 {
     var url = "https://services.swpc.noaa.gov/experimental/images/aurora_dashboard/" + time + "_static_viewline_forecast.png"
     var tempFilePath = babadata.temp + "aurora.png";
     const file = fs.createWriteStream(tempFilePath);
-    
+
     const request = https.get(url, function(response) {
         response.pipe(file);
-     
+
         // after download completed close filestream
          file.on("finish", () => {
              file.close();
              console.log("Download Completed for Aurora");
- 
+
              var vv = "Aurora Forecast for " + time;
-            
-             var newAttch = new Discord.AttachmentBuilder(tempFilePath, 
+
+             var newAttch = new Discord.AttachmentBuilder(tempFilePath,
                  { name: vv + '.png', description : "Aurora Info" + vv}); //makes a new discord attachment
- 
+
             callback({ content: "Baba Aurora Info", files: [newAttch] });
          });
      });
 }
 
+/**
+ * Fetches Goodberry's flavor calendar events from public Google Calendar
+ *
+ * External API call via PublicGoogleCalendar library to retrieve calendar events.
+ * Calendar ID: 24gbb7942jsn557e7l93in7itjmo5lqj@import.calendar.google.com
+ *
+ * Used to display Goodberry's frozen custard flavor schedule. Returns raw events
+ * array via callback for further processing/display.
+ *
+ * @param {Function} callback - Called with object containing events array, or error logged
+ */
 function babaGoodberrys(callback)
 {
     publicGoogleCalendar = new PublicGoogleCalendar({ calendarId: '24gbb7942jsn557e7l93in7itjmo5lqj@import.calendar.google.com' });
 
-    publicGoogleCalendar.getEvents(function(err, events) 
+    publicGoogleCalendar.getEvents(function(err, events)
     {
         if (err) { return console.log(err.message); }
         return callback({ events: events});

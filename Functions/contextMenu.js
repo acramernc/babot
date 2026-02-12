@@ -1,3 +1,13 @@
+/**
+ * Context Menu Interaction Handler
+ *
+ * This module handles all Discord context menu interactions, modal submissions,
+ * button clicks, and select menu interactions for the bot. It includes handlers
+ * for message management (delete/move), haiku searches, and reminder management.
+ *
+ * @module Functions/contextMenu
+ */
+
 var babadata = require('../babotdata.json'); //baba configuration file
 
 const Discord = require('discord.js');
@@ -12,6 +22,37 @@ const { getD1 } = require('../Tools/overrides.js');
 
 global.ReminderList = {};
 
+// ============================================================================
+// CONTEXT MENU HANDLERS
+// ============================================================================
+
+/**
+ * Handles context menu interactions (right-click actions on messages)
+ *
+ * This function processes two main context menu commands:
+ *
+ * 1. "Delete" - Searches for the target message across all channels and threads,
+ *    then moves it to the log channel (babadata.logchan) using the movetoChannel
+ *    helper function. The original message is deleted after being logged.
+ *
+ * 2. "Move To" - Shows a modal dialog allowing the user to specify a destination
+ *    channel ID where the message should be moved. The modal is pre-filled with
+ *    the target message ID for convenience.
+ *
+ * Message Search Process:
+ * - Iterates through all guild channels
+ * - Searches both regular text channels (type 0) and their threads
+ * - Uses message.fetch() with try-catch to handle missing messages gracefully
+ * - Stops searching once the message is found (fnd flag)
+ *
+ * Permission Requirements:
+ * - No explicit permission check in this function
+ * - movetoChannel helper may have admin checks (babadata.adminId)
+ *
+ * @param {Discord.MessageContextMenuCommandInteraction} interaction - The context menu interaction from Discord
+ * @param {Discord.Client} bot - The Discord bot client instance
+ * @returns {Promise<void>}
+ */
 async function contextInfo(interaction, bot)
 {
     var commandName = interaction.commandName;
@@ -19,22 +60,25 @@ async function contextInfo(interaction, bot)
     if (commandName === "Delete")
     {
 		await interaction.deferReply({ ephemeral: true });
-        var fnd = false;
+        var fnd = false; // Flag to stop searching once message is found
         var msgID = interaction.targetId;
 
         var chanMap = interaction.guild.channels.fetch().then(channels => {
-            channels.each(chan => { //iterate through all the channels
-                if (!fnd && chan.type == 0) //make sure the channel is a text channel
+            channels.each(chan => {
+                // Only search text channels (type 0) and stop if message already found
+                if (!fnd && chan.type == 0)
                 {
-                    chan.threads.fetch().then(thread => 
+                    // Search all threads in this channel
+                    chan.threads.fetch().then(thread =>
                         thread.threads.each(thr =>
                         {
-                            thr.messages.fetch(msgID).then(message => 
+                            thr.messages.fetch(msgID).then(message =>
                             {
-                                fnd = true;
+                                fnd = true; // Mark as found to stop other searches
+                                // Move message to log channel and delete original
                                 movetoChannel(message, thr, babadata.logchan);
                                 interaction.editReply({ content: "Message Moved", ephemeral: true });
-                            }).catch(function (err) {});
+                            }).catch(function (err) {}); // Silently fail if message not in this thread
                         })
                     ).catch(function (err) {});
 
@@ -85,6 +129,63 @@ async function contextInfo(interaction, bot)
     }
 }
 
+// ============================================================================
+// MODAL SUBMISSION HANDLERS
+// ============================================================================
+
+/**
+ * Handles modal form submissions from users
+ *
+ * This function processes submissions from various modal dialogs:
+ *
+ * 1. "movetoModal" - Processes the Move To context menu modal submission
+ *    - Extracts message ID and destination channel ID from form inputs
+ *    - Searches all channels/threads for the target message
+ *    - Calls movetoChannel to relocate the message to specified destination
+ *    - Provides feedback: "Searching for Message" → "Message Moved"
+ *
+ * 2. "haiku-*" modals - Processes haiku/purity score search parameters
+ *    - Extracts search criteria: start date, end date, keyword, person
+ *    - Retrieves global interaction state (people list, channel list, purity mode)
+ *    - Sanitizes all user inputs with SQL escape function
+ *    - Generates haiku embed with pagination (5 items per page)
+ *    - Creates interactive buttons for navigation if multiple pages exist
+ *    - Supports three modes: purity score, single haiku, multi-haiku list
+ *
+ * 3. "editReminder-*" modal - Updates an existing reminder
+ *    - Extracts reminder ID, page number, and user ID from custom ID
+ *    - Validates reminder exists and retrieves current data
+ *    - Processes new message, date, and time inputs
+ *    - Validates date/time format and ensures future dates only
+ *    - Falls back to original values if inputs are invalid
+ *    - Updates the reminder in database via editReminder()
+ *    - Refreshes the reminder list display if it's currently shown
+ *    - Provides detailed feedback about what was changed
+ *
+ * 4. "deleteReminder-*" modal - Confirms and deletes a reminder
+ *    - Validates reminder exists before deletion
+ *    - Removes reminder from database via removeReminder()
+ *    - Refreshes the reminder list display for the user
+ *    - Cleans up global state and message references
+ *
+ * Global State Management:
+ * - global.interactions[id]: Stores search parameters and UI state
+ * - global.ReminderList[id]: Tracks active reminder messages for live updates
+ * - global.ReminderMessageExists[id]: Flags for message deletion tracking
+ *
+ * Error Handling:
+ * - Gracefully handles missing messages with .catch()
+ * - Validates reminder existence before operations
+ * - Provides user-friendly error messages for invalid inputs
+ *
+ * Database Operations:
+ * - All user inputs are SQL-escaped before queries
+ * - Uses helper functions for reminder CRUD operations
+ *
+ * @param {Discord.ModalSubmitInteraction} interaction - The modal submission interaction
+ * @param {Discord.Client} bot - The Discord bot client instance
+ * @returns {Promise<void>}
+ */
 async function modalInfo(interaction, bot)
 {
     var cid = interaction.customId;
@@ -292,6 +393,73 @@ async function modalInfo(interaction, bot)
     }
 }
 
+// ============================================================================
+// BUTTON INTERACTION HANDLERS
+// ============================================================================
+
+/**
+ * Handles button click interactions throughout the bot
+ *
+ * This function processes various button types with comprehensive permission checking:
+ *
+ * Permission Validation:
+ * - Checks if interaction.message.interaction exists and validates user ownership
+ * - Reminder buttons validate against the userID encoded in the button customId
+ * - Returns "You cannot use this button" error for unauthorized access
+ *
+ * Button Types:
+ *
+ * 1. "editrem-{remID}-{page}-{userID}" - Opens reminder edit modal
+ *    - Validates reminder exists in database
+ *    - Pre-fills modal with current reminder data (message, date, time)
+ *    - Stores message reference in global.ReminderList for live updates
+ *    - Formats date/time using locale-specific strings
+ *    - Displays mode as "Reminder" or "DM Message" based on source
+ *
+ * 2. "dismissrem-{remID}-{page}-{userID}" - Dismisses reminder notification
+ *    - Does NOT delete the reminder from database
+ *    - Only removes the notification message from Discord
+ *    - Updates global.ReminderMessageExists tracking
+ *    - Provides ephemeral confirmation message
+ *
+ * 3. "deleterem-{remID}-{page}-{userID}" - Shows delete confirmation modal
+ *    - Opens confirmation modal (Discord requires at least one input field)
+ *    - Stores message reference for post-deletion list refresh
+ *    - Actual deletion happens in modalInfo handler
+ *
+ * 4. "cursed" - Generates cursed haiku list
+ *    - Sets buy parameter to 6 for cursed content
+ *    - Removes all interactive components from embed
+ *    - Generates paginated embed (5 per page)
+ *
+ * 5. "purity" / "haiku" / "haiku_list" - Opens haiku/purity search UI
+ *    - Creates new global interaction state entry
+ *    - Shows different select menus based on mode:
+ *      * purity: String select (chans/users/dates) + user select + channel select
+ *      * haiku/haiku_list: Only user select + channel select
+ *    - Provides "Generate" button to open search form modal
+ *    - Stores mode flags: purity (score mode), all (multi-haiku)
+ *
+ * 6. "generateHaikuList" - Opens the haiku search form modal
+ *    - Validates purity mode selection if in purity score mode
+ *    - Pre-fills form with previously entered search parameters
+ *    - Converts purity mode codes to display names
+ *    - Modal includes: keyword, start date, end date, person filters
+ *
+ * Global State:
+ * - global.interactions[messageId]: Stores search parameters and UI state
+ * - global.ReminderList[reminderID]: Maps reminders to their message objects
+ * - global.ReminderMessageExists[messageId]: Tracks active reminder messages
+ *
+ * Interaction Flow Examples:
+ * - Edit Reminder: Button → Modal → modalInfo handler → Database update → List refresh
+ * - Delete Reminder: Button → Confirmation modal → modalInfo handler → Database delete
+ * - Haiku Search: Button → Select menus → Generate button → Search modal → Results
+ *
+ * @param {Discord.ButtonInteraction} interaction - The button interaction from Discord
+ * @param {Discord.Client} bot - The Discord bot client instance
+ * @returns {Promise<void>}
+ */
 async function buttonInfo(interaction, bot)
 {
     var purity = false;
@@ -570,6 +738,42 @@ async function buttonInfo(interaction, bot)
     }
 }
 
+// ============================================================================
+// SELECT MENU HANDLERS
+// ============================================================================
+
+/**
+ * Handles string select menu interactions (dropdown selections)
+ *
+ * This function processes string-based dropdown menu selections:
+ *
+ * "puritymode" Select Menu:
+ * - Stores the selected purity mode in global interaction state
+ * - Available options:
+ *   * "chans" - Show purity scores grouped by channels
+ *   * "users" - Show purity scores grouped by users
+ *   * "dates" - Show purity scores grouped by dates
+ *
+ * State Management:
+ * - Creates global.interactions[messageId] entry if it doesn't exist
+ * - Sets default values: puritymode: null, personList: null, channelList: null
+ * - Sets purity flag to true to indicate purity score mode
+ * - Stores selected value from interaction.values[0]
+ *
+ * User Feedback:
+ * - Replies with ephemeral "puritymode" confirmation
+ * - Immediately deletes the reply for cleaner UI
+ * - User sees selection update in the select menu without extra messages
+ *
+ * Integration:
+ * - Works with "purity" button interaction flow
+ * - Value is read by generateHaikuList button handler
+ * - Passed to babaHaikuEmbed for query generation
+ *
+ * @param {Discord.StringSelectMenuInteraction} interaction - The string select menu interaction
+ * @param {Discord.Client} bot - The Discord bot client instance
+ * @returns {Promise<void>}
+ */
 async function stringSelectInfo(interaction, bot)
 {
     var cid = interaction.customId;
@@ -586,6 +790,43 @@ async function stringSelectInfo(interaction, bot)
     }
 }
 
+/**
+ * Handles user select menu interactions (user picker dropdowns)
+ *
+ * This function processes user selection from Discord's user picker component:
+ *
+ * "personList" Select Menu:
+ * - Stores selected user IDs in global interaction state
+ * - Supports multi-select: 0-25 users can be selected
+ * - Used for filtering haiku/purity searches by specific users
+ *
+ * State Management:
+ * - Creates global.interactions[messageId] entry if it doesn't exist
+ * - Sets default values: puritymode: null, personList: null, channelList: null
+ * - Stores array of user IDs from interaction.values
+ * - Flags: purity: false, all: false (not in purity/multi mode by default)
+ *
+ * User Feedback:
+ * - Replies with ephemeral "personList" confirmation
+ * - Immediately deletes the reply for cleaner UI
+ * - Selected users remain visible in the select menu component
+ *
+ * Integration:
+ * - Works with "purity", "haiku", and "haiku_list" button flows
+ * - User IDs are retrieved in modalInfo haiku handler
+ * - Combined with manual person input field in search modal
+ * - Format: "{manualInput}---{selectedUserIds}" in final query
+ *
+ * Data Flow:
+ * - User clicks purity/haiku button → Select menu shown
+ * - User picks people → Stored in global.interactions
+ * - User clicks generate → Modal shown with text input
+ * - Modal submitted → Combines both sources for search
+ *
+ * @param {Discord.UserSelectMenuInteraction} interaction - The user select menu interaction
+ * @param {Discord.Client} bot - The Discord bot client instance
+ * @returns {Promise<void>}
+ */
 async function userSelectInfo(interaction, bot)
 {
     var cid = interaction.customId;
@@ -600,6 +841,44 @@ async function userSelectInfo(interaction, bot)
     }
 }
 
+/**
+ * Handles channel select menu interactions (channel picker dropdowns)
+ *
+ * This function processes channel selection from Discord's channel picker component:
+ *
+ * "channelList" Select Menu:
+ * - Stores selected channel IDs in global interaction state
+ * - Supports multi-select: 0-25 channels can be selected
+ * - Used for filtering haiku/purity searches by specific channels
+ *
+ * State Management:
+ * - Creates global.interactions[messageId] entry if it doesn't exist
+ * - Sets default values: puritymode: null, personList: null, channelList: null
+ * - Stores array of channel IDs from interaction.values
+ * - Flags: purity: false, all: false (not in purity/multi mode by default)
+ *
+ * User Feedback:
+ * - Replies with ephemeral "channelList" confirmation
+ * - Immediately deletes the reply for cleaner UI
+ * - Selected channels remain visible in the select menu component
+ *
+ * Integration:
+ * - Works with "purity", "haiku", and "haiku_list" button flows
+ * - Channel IDs are retrieved in modalInfo haiku handler
+ * - Converted to comma-separated string for database query
+ * - Used to filter haiku search results to specific channels
+ *
+ * Data Flow:
+ * - User clicks purity/haiku button → Select menu shown
+ * - User picks channels → Stored in global.interactions
+ * - User clicks generate → Modal shown with additional filters
+ * - Modal submitted → Channel IDs included in search query
+ * - Empty array results in null (search all channels)
+ *
+ * @param {Discord.ChannelSelectMenuInteraction} interaction - The channel select menu interaction
+ * @param {Discord.Client} bot - The Discord bot client instance
+ * @returns {Promise<void>}
+ */
 async function channelSelectInfo(interaction, bot)
 {
     var cid = interaction.customId;
@@ -614,6 +893,23 @@ async function channelSelectInfo(interaction, bot)
     }
 }
 
+// ============================================================================
+// MODULE EXPORTS
+// ============================================================================
+
+/**
+ * Exported interaction handlers for Discord component interactions
+ *
+ * These functions are called by the main bot event handler based on interaction type:
+ * - contextInfo: Called when user right-clicks on a message (context menu)
+ * - modalInfo: Called when user submits a modal form
+ * - buttonInfo: Called when user clicks a button component
+ * - stringSelectInfo: Called when user selects from a dropdown menu
+ * - userSelectInfo: Called when user picks users from user select menu
+ * - channelSelectInfo: Called when user picks channels from channel select menu
+ *
+ * All handlers follow the same signature: (interaction, bot) => Promise<void>
+ */
 module.exports = {
 	contextInfo,
     modalInfo,

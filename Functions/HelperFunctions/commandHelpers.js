@@ -1,3 +1,31 @@
+/**
+ * @fileoverview Command Helper Functions for Baba Discord Bot
+ *
+ * Provides specialized utilities for command implementations:
+ *
+ * Image Generation:
+ * - MakeImage(): Creates holiday countdown images with Jimp
+ * - Overlays week numbers, bonus modifiers, and text on base images
+ * - Handles coordinate positioning and font rendering
+ *
+ * Holiday System:
+ * - CheckHoliday(): Determines current holiday based on date
+ * - FindNextHoliday(): Calculates next upcoming holiday
+ * - Loads FrogHolidays.json with custom holiday definitions
+ *
+ * Hurricane Tracking:
+ * - checkHurricaneStuff(): Fetches active hurricane data from NOAA API
+ * - Syncs hurricane information to database
+ * - Formats hurricane data for Discord embeds
+ *
+ * Data Processing:
+ * - GetWhite(): Character normalization lookup table
+ * - BonusGenerator(): Calculates special date-based multipliers
+ * - monthFromInt(): Converts month numbers to names
+ *
+ * @module commandHelpers
+ */
+
 var babadata = require('../../babotdata.json'); //baba configuration file
 
 const fs = require('fs');

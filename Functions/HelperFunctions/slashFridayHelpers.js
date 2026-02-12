@@ -1,3 +1,17 @@
+/**
+ * Friday Command Helpers
+ *
+ * This module provides comprehensive functionality for the /friday slash command system including:
+ * - Day-of-week calculations and date arithmetic
+ * - Nested text replacement with weighted selection
+ * - Text-to-speech (Morshu) integration
+ * - Cache management for DOW items and loops
+ * - Wednesday frog system with permission controls
+ * - Statistical tracking of item usage
+ *
+ * @module slashFridayHelpers
+ */
+
 var babadata = require('../../babotdata.json'); //baba configuration file
 
 const fs = require('fs');
@@ -8,11 +22,43 @@ const { getD1 } = require('../../Tools/overrides.js');
 
 var theRNG = new RNG();
 
+// ============================================================================
+// RNG MANAGEMENT
+// ============================================================================
+
+/**
+ * Resets the global RNG instance to a new unseeded state
+ *
+ * Used to ensure deterministic behavior across command invocations.
+ * The RNG is critical for reproducible text generation when using seeds.
+ *
+ * @returns {void}
+ */
 function resetRNG()
 {
 	theRNG = new RNG();
 }
 
+// ============================================================================
+// STRING CHUNKING UTILITIES
+// ============================================================================
+
+/**
+ * Splits a string into chunks of max 2000 characters, breaking on newlines
+ *
+ * Discord message length limit is 2000 characters. This function ensures messages
+ * are split intelligently at line breaks rather than mid-sentence. Each chunk
+ * will be ≤2000 chars and will contain complete lines.
+ *
+ * Algorithm:
+ * 1. Split input on newlines
+ * 2. Accumulate lines into current chunk
+ * 3. When adding next line would exceed 2000, push chunk and start new one
+ * 4. Each line keeps its trailing newline
+ *
+ * @param {string} str - The string to chunk
+ * @returns {string[]} Array of string chunks, each ≤2000 characters
+ */
 function splitStringInto2000CharChunksonNewLine(str)
 {
 	var chunks = [];
@@ -31,6 +77,21 @@ function splitStringInto2000CharChunksonNewLine(str)
 	return chunks;
 }
 
+/**
+ * Splits a string into chunks of max 900 characters, breaking on spaces
+ *
+ * Used for TTS (Morshu) API calls which have a lower character limit than Discord.
+ * Breaks on word boundaries to ensure TTS pronunciation is natural.
+ *
+ * Algorithm:
+ * 1. Split input on spaces
+ * 2. Accumulate words into current chunk
+ * 3. When adding next word would exceed 900, push chunk and start new one
+ * 4. Each word keeps its trailing space
+ *
+ * @param {string} str - The string to chunk for TTS processing
+ * @returns {string[]} Array of string chunks, each ≤900 characters
+ */
 function splitStringInto900CharChunksonSpace(str)
 {
 	var chunks = [];
@@ -49,6 +110,36 @@ function splitStringInto900CharChunksonSpace(str)
 	return chunks;
 }
 
+// ============================================================================
+// MAIN COMMAND EXECUTION
+// ============================================================================
+
+/**
+ * Posts a funny day-of-week message to Discord with optional TTS audio files
+ *
+ * This is the main entry point for the /friday command. It generates text,
+ * processes TTS markers, manages Discord's file attachment limits, and posts
+ * the message as a chain of replies.
+ *
+ * Discord Limits Handled:
+ * - 2000 char message limit (splits on newlines)
+ * - 5 file attachments per message (redistributes across messages)
+ * - Message chaining (replies to create threads)
+ *
+ * Algorithm:
+ * 1. Generate text with funnyDOWTextSaved (includes TTS processing)
+ * 2. Split text into ≤2000 char chunks
+ * 3. Redistribute file attachments to respect 5-file limit
+ * 4. Post first chunk as initial message/reply
+ * 5. Chain remaining chunks as replies to each other
+ *
+ * @param {string} mode - "message" (legacy) or "interaction" (slash command)
+ * @param {Object} message - Discord message or interaction object
+ * @param {number} dowNum - Day of week number (0=Sunday, 5=Friday, etc)
+ * @param {Array|number} seedSet - RNG seed for reproducibility, or -1 for random
+ * @param {boolean} dontSave - If true, skip saving to fridaymessages.json
+ * @returns {Promise<void>}
+ */
 async function functionPostFunnyDOW(mode, message, dowNum, seedSet = -1, dontSave = false)
 {
 	var id = mode == "interaction" ? message.user.id : message.author.id;
@@ -107,6 +198,36 @@ async function functionPostFunnyDOW(mode, message, dowNum, seedSet = -1, dontSav
 	}
 }
 
+/**
+ * Generates day-of-week text and saves to persistent message history
+ *
+ * This wrapper function handles:
+ * - Seed initialization for reproducible generation
+ * - Cache version selection for historical playback
+ * - Saving generated messages to fridaymessages.json with metadata
+ * - Processing TTS (Morshu) markers
+ *
+ * Seed Format:
+ * - -1: Random generation
+ * - [customString]: Use custom text directly
+ * - [seed, cacheVer, calledAs, during, utod, udf]: Full replay state
+ *
+ * Cache Management:
+ * - fridaymessages.json stores all generated messages with seeds
+ * - Allows historical playback of any previous message
+ * - Tracks which cache version was used (for time-gated items)
+ *
+ * Condensed Notation:
+ * - Compact representation of which items were selected
+ * - Format: UID + modifiers (>, %, etc) + recursive selections
+ * - Used for debugging and analytics
+ *
+ * @param {number} dowNum - Day of week number (0=Sunday, 5=Friday, etc)
+ * @param {string} authorID - Discord user ID for permission checks
+ * @param {Array|number} seedSet - Seed config or -1 for random
+ * @param {boolean} dontSave - Skip saving to fridaymessages.json
+ * @returns {Promise<Array>} Array of message objects with content/files
+ */
 async function funnyDOWTextSaved(dowNum, authorID, seedSet = -1, dontSave = false)
 {
 	var cacheVersion = -1;
@@ -136,7 +257,7 @@ async function funnyDOWTextSaved(dowNum, authorID, seedSet = -1, dontSave = fals
 
 	var textGroup = await funnyDOWText(cacheVersion, !dontSave, [during, utod, udf], dowNum, calledAs != null ? calledAs : authorID, 0, [], 0, customString);
 	var text = textGroup[0];
-	
+
 	// console.log("Condensed Notation: " + textGroup[1]);
 	// console.log("Condensed Notation Info: " + textGroup[2]);
 
@@ -146,7 +267,7 @@ async function funnyDOWTextSaved(dowNum, authorID, seedSet = -1, dontSave = fals
 		var cnYung = textGroup[2];
 		// append text to fridaymessages.json
 
-		if (!fs.existsSync(babadata.datalocation + "fridaymessages.json")) 
+		if (!fs.existsSync(babadata.datalocation + "fridaymessages.json"))
 		{
 			console.log("No fridaymessages file found -- creating with local data");
 			var data = [];
@@ -157,7 +278,7 @@ async function funnyDOWTextSaved(dowNum, authorID, seedSet = -1, dontSave = fals
 		var fmr = fs.readFileSync(fmpath);
 		var fmd = JSON.parse(fmr);
 		var tod = getD1(true);
-	
+
 		var cnFull = condensedNotation;
 		if (cnYung.length > 0)
 		{
@@ -173,13 +294,13 @@ async function funnyDOWTextSaved(dowNum, authorID, seedSet = -1, dontSave = fals
 		}
 
 		theRNG = new RNG(theRNG.getState());
-	
+
 		fs.readdir(babadata.datalocation + "FridayCache", (err, files) => {
 			fcacheitems = files.length / 3;
 
 			var fmdItem = { "UID": authorID, "Text": text, "Date": tod, "CondensedNotation": cnFull, "Seed": seed, "FileVersion": fcacheitems };
 			fmd.push(fmdItem);
-		
+
 			fs.writeFileSync(fmpath, JSON.stringify(fmd));
 		});
 	}
@@ -195,6 +316,38 @@ async function funnyDOWTextSaved(dowNum, authorID, seedSet = -1, dontSave = fals
 	return textList;
 }
 
+// ============================================================================
+// TEXT-TO-SPEECH (MORSHU) INTEGRATION
+// ============================================================================
+
+/**
+ * Processes Morshu TTS markers and generates audio/video files
+ *
+ * Morshu is a text-to-speech API that generates audio or video from text.
+ * This function extracts marked regions and converts them to TTS files.
+ *
+ * Supported Markers:
+ * - {MORSHUIFY_AUDIO} - Convert following text to audio, show text
+ * - {MORSHUIFY_AUDIO_HIDDEN} - Convert to audio, hide text
+ * - }OIDUA_YFIUHSROM{ - Reversed marker (text before marker reversed)
+ * - }NEDDIH_OIDUA_YFIUHSROM{ - Reversed + hidden
+ * - Video variants: _VIDEO instead of _AUDIO
+ *
+ * Algorithm:
+ * 1. Detect if reversed marker (reverses text for processing)
+ * 2. Extract text before/after marker
+ * 3. Split TTS text into 900-char chunks (API limit)
+ * 4. Call babaMorshu API for each chunk
+ * 5. Return array of message objects with text/files
+ *
+ * Hidden Mode:
+ * - HIDDEN markers omit text from message, only attach file
+ * - Used for pure audio/video output without spoiling text
+ *
+ * @param {string} text - Text containing Morshu markers
+ * @param {string} mode - "audio" or "video" for TTS output type
+ * @returns {Promise<Array>} Array of {content, files} objects
+ */
 async function morshin(text, mode)
 {
 	var files = [];
@@ -222,7 +375,7 @@ async function morshin(text, mode)
 	var morshutext = text.substring(start, end);
 
 	text = text.replace(morshutext, "").trim();
-	
+
 	if (text != "")
 	{
 		if (reversedTime)
@@ -261,6 +414,25 @@ async function morshin(text, mode)
 	return files;
 }
 
+/**
+ * Checks text for Morshu TTS markers and processes them
+ *
+ * Entry point for TTS processing. Scans text for both audio and video markers,
+ * processes video first (if present), then audio. This allows mixed TTS output.
+ *
+ * Processing Order:
+ * 1. Video markers processed first
+ * 2. Audio markers processed second
+ * 3. If video was hidden, audio markers converted to hidden
+ *
+ * Marker Priority:
+ * - Video markers take precedence
+ * - Hidden video prevents audio text display
+ * - Multiple markers can coexist in same text
+ *
+ * @param {string} text - Text potentially containing Morshu markers
+ * @returns {Promise<Array>} Array of message objects: [{content, files}, ...]
+ */
 async function checkForMorshus(text)
 {
 	var files = [];
@@ -317,6 +489,58 @@ async function checkForMorshus(text)
 	return files;
 }
 
+// ============================================================================
+// CORE TEXT GENERATION ENGINE
+// ============================================================================
+
+/**
+ * Generates funny day-of-week text with nested replacements and date calculations
+ *
+ * This is the heart of the /friday command. It handles:
+ * - Loading DOW items from cache (with time-gated filtering)
+ * - Day-of-week arithmetic to calculate days until target day
+ * - Recursive text generation with {RECURSIVE}, <RECURSIVE>, {REVERSE}
+ * - Nested loop replacement system [key] -> FridayLoops.json
+ * - Repeat syntax {repeat:N:text} and {brepeat:[tag]:text}
+ * - Discord timestamp formatting [TS-R], [td TS-D], etc
+ * - User lookup with [SENDER]
+ * - Statistical tracking of which items were used
+ * - Condensed notation generation for analytics
+ *
+ * Day-of-Week Math:
+ * - num = ((dowNum - currentDay) + 7) % 7
+ * - This calculates days until next occurrence of target day
+ * - Example: Friday=5, Wednesday=3 → (5-3+7)%7 = 2 days
+ * - Modulo 7 handles week wraparound
+ *
+ * Cache Versions:
+ * - -1: Use current DOWcache.json
+ * - N: Use FridayCache/DOWcacheN.json (historical snapshot)
+ * - Allows replaying old messages with period-accurate items
+ *
+ * Recursive Generation:
+ * - {RECURSIVE}: Insert result of another funnyDOWText call
+ * - <RECURSIVE>: Same but URL-safe (alphanumeric only)
+ * - {REVERSE}: Same but reversed character order
+ * - Loops until no more recursive markers found
+ *
+ * Heading Weights (h1/h2/h3):
+ * - h1: 1x weight (1 copy in selection pool)
+ * - h2: 2x weight (2 copies in selection pool)
+ * - h3: 4x weight (4 copies in selection pool)
+ * - Only applied at recursion level 0
+ *
+ * @param {number} cacheVersion - Cache version to use, -1 for current
+ * @param {boolean} saveToFile - Save usage stats to fridayCounter.json
+ * @param {Array} DateOveride - [during, utod, udf] for date override
+ * @param {number} dowNum - Target day of week (0=Sunday, 5=Friday)
+ * @param {string} authorID - Discord user ID for permissions
+ * @param {number} recrused - Recursion depth (0 = top level)
+ * @param {Array} ToBeCounted - Accumulator for usage statistics
+ * @param {number} headLevel - Heading level for stats (0-3)
+ * @param {string|null} customString - Override text (bypasses cache)
+ * @returns {Promise<Array>} [text, condensedNotation, cnYung]
+ */
 async function funnyDOWText(cacheVersion, saveToFile, DateOveride, dowNum, authorID, recrused = 0, ToBeCounted = [], headLevel = 0, customString = null)
 {
 	let path = babadata.datalocation + "DOWcache.json";
@@ -749,6 +973,36 @@ async function funnyDOWText(cacheVersion, saveToFile, DateOveride, dowNum, autho
 	return [text, condensedNotation, cnYung];
 }
 
+// ============================================================================
+// CONDENSED NOTATION SYSTEM
+// ============================================================================
+
+/**
+ * Creates condensed notation string from repeat operation list
+ *
+ * Condensed notation is a compact representation of which repeat operations
+ * were performed during text generation. Used for debugging and analytics.
+ *
+ * Format Examples:
+ * - "5" → repeated 5 times
+ * - "5s" → repeated 5 times with space separator
+ * - "5n" → repeated 5 times with newline separator
+ * - "3+7+2" → three separate repeat operations
+ * - "5*3s" → nested repeat (5 outer, 3s inner)
+ *
+ * Nested Handling:
+ * - Items like "0-6s" indicate nested operation
+ * - "0-" means modify item at index 0
+ * - Converted to "ItemAt0*6s" notation
+ *
+ * Prefix Meanings:
+ * - ">" → Standard repeat operations
+ * - "%" → Before-replacement operations (brepeat)
+ *
+ * @param {Array<string>} listOfCDs - List of repeat operation descriptors
+ * @param {string} prefix - Prefix character (>, %, etc)
+ * @returns {string} Condensed notation string
+ */
 function condensedNotationCreator(listOfCDs, prefix)
 {
 	var condensedNotation = "";
@@ -768,13 +1022,60 @@ function condensedNotationCreator(listOfCDs, prefix)
 				listOfCDs[index] += "*" + item;
 			}
 		}
-		
+
 		condensedNotation += prefix + listOfCDs.join("+");
 	}
 
 	return condensedNotation;
 }
 
+// ============================================================================
+// NESTED LOOP REPLACEMENT SYSTEM
+// ============================================================================
+
+/**
+ * Replaces nested loop tags with random selections from FridayLoops.json
+ *
+ * The nested loop system allows text to contain placeholders like [emotion]
+ * or [game] that get replaced with random options from a curated list.
+ *
+ * Algorithm:
+ * 1. Load FridayLoops.json (or historical cache version)
+ * 2. Search text for [key] patterns
+ * 3. Replace each [key] with randomly selected value from loops[key]
+ * 4. Repeat until no more replaceable patterns found
+ * 5. Track usage statistics in ToBeCounted
+ *
+ * Cache Format (FridayLoops.json):
+ * {
+ *   "emotion": [{text: "happy", UID: 123}, {text: "sad", UID: 456}, ...],
+ *   "game": [{text: "Minecraft", UID: 789}, ...],
+ *   ...
+ * }
+ *
+ * Nested Loops:
+ * - [emotion] might expand to "very [emotion2]"
+ * - Second pass replaces [emotion2]
+ * - Continues until no more patterns
+ *
+ * Weight System:
+ * - Each item has equal probability (uniform random)
+ * - All items in array have same selection weight
+ * - RNG ensures deterministic selection with same seed
+ *
+ * Statistics Tracking:
+ * - Records which UID was selected
+ * - Tracks recursion depth
+ * - Group 1 = loop items (vs Group 0 = main items)
+ *
+ * @param {number} cacheVersion - Cache version, -1 for current
+ * @param {string} text - Text containing [key] patterns
+ * @param {Array|null} ToBeCounted - Stats accumulator
+ * @param {number} recrused - Current recursion depth
+ * @param {number} headLevel - Heading level for stats
+ * @param {string} authorID - User ID for stats
+ * @returns {string} Text with all [key] patterns replaced
+ */
 function replaceNested(cacheVersion, text, ToBeCounted = null, recrused = 0, headLevel = 0, authorID = 0)
 {
 	var replaced = true;
@@ -802,32 +1103,39 @@ function replaceNested(cacheVersion, text, ToBeCounted = null, recrused = 0, hea
 		replaced = false;
 	}
 
+	// Multi-pass replacement loop: continues until no more [key] patterns found
+	// This allows nested patterns like [emotion] -> "very [emotion2]" -> "very sad"
 	while (replaced)
 	{
-		replaced = false;
+		replaced = false; // Reset flag - will be set to true if any replacement occurs
 
-		// loop throught replacements
+		// Check each possible replacement key from FridayLoops.json
 		for (var i = 0; i < Object.keys(replacements).length; i++)
 		{
-			var key = Object.keys(replacements)[i];
-			var value = replacements[key];
+			var key = Object.keys(replacements)[i];    // e.g., "emotion", "game", "person"
+			var value = replacements[key];              // Array of possible replacements
 
+			// Build regex to match [key] globally (escape brackets with \\)
 			var regex = new RegExp("\\[" + key + "\\]", "g");
 
+			// If text contains this pattern, replace all occurrences
 			if (text.match(regex))
 			{
+				// Replace each instance of [key] individually (allows different random selections)
 				while (text.match(regex))
 				{
+					// Select random item from value array using RNG (deterministic with seed)
 					var numbo = Math.floor(theRNG.nextFloat() * value.length);
 					text = text.replace("[" + key + "]", value[numbo].text);
 
+					// Track which item was used for statistics
 					if (ToBeCounted != null)
 					{
 						TBDItem = { "UID": value[numbo].UID, "LayerDeep": recrused, "Group": 1, "Text": value[numbo].text, "HeadLevel": headLevel, "Sender": authorID};
 						ToBeCounted.push(TBDItem);
 					}
 				}
-				replaced = true;
+				replaced = true; // Found and replaced at least one pattern - need another pass
 			}
 		}
 	}

@@ -1,3 +1,30 @@
+/**
+ * @fileoverview Database Helper Functions for Baba Discord Bot
+ *
+ * Provides database and text processing utilities:
+ *
+ * SQL Security:
+ * - sqlEscapeStringThingforAdamBecauseHeWillDoanSQLInjectionOtherwise():
+ *   Escapes special characters to prevent SQL injection attacks
+ *   Handles: null bytes, backspace, tab, ctrl-Z, newline, carriage return,
+ *   quotes, backslashes, and percent signs
+ *
+ * Text Normalization:
+ * - normalizeMSG(): Converts Unicode variations to standard characters
+ * - Uses character lookup table for consistency across different Unicode forms
+ * - Ensures haiku search works with various character representations
+ *
+ * Character Lookup:
+ * - LoadTextChangeLookup(): Loads normalization mappings from JSON
+ * - Populates global.reverseLook for font conversion system
+ * - bidirectional mapping for text transformation
+ *
+ * Haiku Detection:
+ * - Pattern matching for identifying haiku-like messages
+ *
+ * @module dbHelpers
+ */
+
 var babadata = require('../../babotdata.json'); //baba configuration file
 
 const fs = require('fs');
@@ -5,6 +32,15 @@ const fs = require('fs');
 var lookuptable = {};
 global.reverseLook = {};
 
+/**
+ * Escapes SQL special characters to prevent injection attacks
+ *
+ * Named humorously as a reminder that SQL injection is a serious security concern.
+ * This function should be used on ALL user input before including in SQL queries.
+ *
+ * @param {string} str - String to escape
+ * @returns {string} Escaped string safe for SQL queries
+ */
 function sqlEscapeStringThingforAdamBecauseHeWillDoanSQLInjectionOtherwise(str)
  {
     return str.replace(/[\0\x08\x09\x1a\n\r"'\\\%]/g, function (char) 

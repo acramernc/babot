@@ -1,3 +1,42 @@
+/**
+ * @fileoverview Basic Helper Functions for Baba Discord Bot
+ *
+ * Comprehensive utility library providing 100+ functions across multiple domains:
+ *
+ * Categories:
+ * - Date/Time Utilities: Holiday calculations, date parsing, Easter algorithm, time string parsing
+ * - Holiday Channel Management: Seasonal theme automation (Halloween, Thanksgiving, Christmas, New Year)
+ * - String Formatting: Message splitting, Unicode font conversion, progress bars
+ * - Discord User Management: Role assignment, timeouts, member operations
+ * - Discord API Utilities: Channel status updates, authenticated requests, voice channel operations
+ * - Discord Builders: Button pagination, embed navigation, modal creation
+ * - File Operations: Attachment handling, API request execution from config files
+ * - Easter Eggs & Reactions: Automatic emoji reactions, trigger-based responses, fish system
+ * - Natural Language Processing: Time parsing with modifiers (tonight, tomorrow morning, etc.)
+ * - Emoji Systems: Intelligent emoji matching, extreme emoji mode for events
+ * - Database Helpers: Frog ID checking, various cache file operations
+ * - Audit Log Utilities: Discord event type enum conversion
+ *
+ * Key Features:
+ * - Automatic holiday channel theming based on calendar dates
+ * - Complex natural language time parsing ("tomorrow afternoon", "later tonight")
+ * - Smart emoji reaction system with category-based selection
+ * - "Please" response system with customizable probability distributions
+ * - Fish Easter egg with weighted random selection
+ * - Button-based pagination with modal jump-to-page
+ * - Message splitting for Discord's 2000 character limit
+ * - Unicode fancy font converter with 12+ font styles
+ *
+ * @module basicHelpers
+ * @requires ../../babotdata.json
+ * @requires fs
+ * @requires https
+ * @requires node-fetch
+ * @requires discord.js
+ * @requires ../../Tools/overrides
+ * @requires ./slashFridayHelpers
+ */
+
 var babadata = require('../../babotdata.json'); //baba configuration file
 
 const fs = require('fs');
@@ -16,6 +55,28 @@ const validLetters = "bikusfrday";
 
 const options = { year: 'numeric', month: 'long', day: 'numeric' }; // for date parsing to string
 
+// ============================================
+// Date and Time Utilities
+// ============================================
+
+/**
+ * Parses a message to extract date information (month, day, year)
+ *
+ * Processes natural language date strings by:
+ * - Removing common words like "wednesday", "days", "until", "next"
+ * - Extracting month names (partial matches supported, e.g., "jan" matches "january")
+ * - Parsing day (1-31) and year values
+ * - Validating day limits for months (29 for Feb, 30 for Apr/Jun/Sep/Nov)
+ * - Defaulting to current year if year not provided
+ *
+ * @param {string} message - The message text to parse for date information
+ * @param {boolean} [haiku=false] - If true, allows partial dates (month/day/year can be 0)
+ * @returns {Object|null} Date object with properties {name: "date", mode: 5, day, month, year} or null if invalid
+ *
+ * @example
+ * FindDate("!baba wednesday until january 15 2026") // Returns {name: "date", mode: 5, day: 15, month: 1, year: 2026}
+ * FindDate("next april 20") // Returns {name: "date", mode: 5, day: 20, month: 4, year: 2026}
+ */
 function FindDate(message, haiku = false) //Not Thanks to Jeremy's Link
 {
 	var outps = message.toLowerCase().replace("!baba", "") //there is no point to this, i did it because i wanted too
@@ -86,20 +147,24 @@ function FindDate(message, haiku = false) //Not Thanks to Jeremy's Link
 		}
 	}
 
+	// Day limit validation by month
+	// Format: [maxDays, month1, month2, ...]
+	// February has 29 days (accounts for leap years), Apr/Jun/Sep/Nov have 30 days
 	var months = [ //Another lookup table - Hank likes these :)
-		[29, 2],
-		[30, 4, 6, 9, 11]
+		[29, 2],              // February: 29 days max
+		[30, 4, 6, 9, 11]     // April, June, September, November: 30 days max
 	]
 
-	for ( var i = 0; i < months.length; i++) 
+	// Validate day doesn't exceed month limits (prevents invalid dates like February 31)
+	for ( var i = 0; i < months.length; i++)
 	{
-		var limit = months[i][0]; //limit moth checker
-		for ( var j = 1; j < months[i].length; j++) 
+		var limit = months[i][0]; // Maximum days for this group
+		for ( var j = 1; j < months[i].length; j++)
 		{
-			if (months[i][j] == month) //month checked = motnh got
+			if (months[i][j] == month) // Check if current month is in this group
 			{
 				if (day > limit)
-					return null;
+					return null; // Invalid: day exceeds month limit
 			}
 		}
 	}
@@ -123,33 +188,55 @@ function FindDate(message, haiku = false) //Not Thanks to Jeremy's Link
 	return item;
 }
 
+/**
+ * Manages seasonal holiday channel updates based on current date
+ *
+ * Automatically transitions holiday channel themes throughout the year:
+ * - October (month 9): Sets to "spook" theme
+ * - November (month 10): Sets to "thanks" theme on/after Thanksgiving (4th Thursday)
+ * - November post-Thanksgiving: Sets to "crimbo" theme
+ * - December 1-25: Maintains "crimbo" theme
+ * - December 26+: Sets to "defeat" (New Year) theme
+ *
+ * Also schedules channel description update to progress bar at midnight (00:00-00:03).
+ *
+ * @param {Guild} guild - Discord guild object for channel management
+ * @param {Date} d1 - Current date to check for holiday transitions
+ */
 function MonthsPlus(guild, d1)
 {
 	var yr = d1.getFullYear();
+
+	// October (month 9 in 0-indexed): Halloween theme
 	if (d1.getMonth() == 9 && babadata.holidayval != "spook")
 	{
-		//set channel info
 		SetHolidayChan(guild, "spook");
 	}
+	// November (month 10): Complex Thanksgiving → Christmas transition
 	else if (d1.getMonth() == 10)
 	{
+		// Calculate Thanksgiving: 4th Thursday of November
 		var hi = {};
-		hi.dayofweek = 4;
-		hi.week = 4;
-		hi.mode = 1;
-		hi.month = 11;
+		hi.dayofweek = 4;   // Thursday (0=Sunday, 4=Thursday)
+		hi.week = 4;        // 4th week
+		hi.mode = 1;        // Mode 1 = Nth weekday of month
+		hi.month = 11;      // November
 
+		// Get Thanksgiving date for this year relative to current date
 		var tgday = GetDate(d1, yr, hi);
 
+		// Get Thanksgiving date for this year always (from Nov 1st reference)
 		var d0 = new Date(yr, 10, 1);
 		var tgdayThisYearAlways = GetDate(d0, yr, hi);
 
-		var tday = getD1().getDate(); //get this day
+		var tday = getD1().getDate();
 
+		// Before Thanksgiving: Set to "thanks" theme
 		if (tgday.getFullYear() == yr && babadata.holidayval != "thanks")
 		{
 			SetHolidayChan(guild, "thanks");
 		}
+		// After Thanksgiving: Transition to Christmas "crimbo" theme
 		else if (tgdayThisYearAlways.getDate() < tday)
 		{
 			if (babadata.holidayval != "crimbo")
@@ -159,23 +246,36 @@ function MonthsPlus(guild, d1)
 		}
 	}
 
+	// December (month 11): Christmas → New Year transition
 	if (d1.getMonth() == 11)
 	{
+		// Dec 1-25: Christmas theme
 		if (d1.getDate() <= 25 && babadata.holidayval != "crimbo")
 			SetHolidayChan(guild, "crimbo");
+		// Dec 26+: New Year's "defeat" theme (defeat the old year)
 		else if (babadata.holidayval != "defeat" && d1.getDate() > 25)
 			SetHolidayChan(guild, "defeat");
 	}
 
 	var dnow = getD1(true);
-	// only call this at midnight
+	// Update channel description with year progress bar at midnight (00:00-00:03)
+	// Delayed 15 minutes to avoid rate limit conflicts with other midnight tasks
 	if (dnow.getHours() == 0 && dnow.getMinutes() < 3)
 	{
 		console.log("Setting Holiday Channel Description to Progress");
-		setTimeout(function() {setChannelDescriptionToProgress(guild, dnow);}, 1000 * 60 * 15); //15 minutes later
+		setTimeout(function() {setChannelDescriptionToProgress(guild, dnow);}, 1000 * 60 * 15);
 	}
 }
 
+/**
+ * Updates the holiday channel description with a year progress bar
+ *
+ * Sets the channel topic to display "Holidays Brought to you by Baba!" followed
+ * by a visual progress bar showing how much of the year has elapsed.
+ *
+ * @param {Guild} guild - Discord guild object
+ * @param {Date} d1 - Current date for progress calculation
+ */
 function setChannelDescriptionToProgress(guild, d1)
 {
 	if (guild != null && babadata.holidaychan != "0")
@@ -191,6 +291,30 @@ function setChannelDescriptionToProgress(guild, d1)
 	}
 }
 
+/**
+ * Calculates the actual date for a holiday based on its definition and year
+ *
+ * Supports multiple holiday calculation modes:
+ * - Mode 0: Fixed date (month/day/year)
+ * - Mode 1: Nth weekday of month (e.g., 4th Thursday of November for Thanksgiving)
+ * - Mode 2: First occurrence of specific weekday after given day in remaining months
+ * - Mode 3: Easter Sunday (uses Easter calculation algorithm)
+ * - Mode 5: Custom date with year override handling
+ *
+ * Automatically advances to next year if calculated date has already passed.
+ * Validates dates and returns far-future date (year 200000) for invalid dates.
+ *
+ * @param {Date} d1 - Reference date (usually current date)
+ * @param {number} yr - Year to calculate holiday for
+ * @param {Object} holidayinfo - Holiday definition object with properties:
+ *   - {number} mode - Calculation mode (0-5)
+ *   - {number} month - Month (1-12)
+ *   - {number} day - Day of month or specific day depending on mode
+ *   - {number} [dayofweek] - Day of week (0=Sunday, 6=Saturday) for modes 1-2
+ *   - {number} [week] - Week number for mode 1 (negative counts from end)
+ *   - {string} name - Holiday name (sets safename for display)
+ * @returns {Date} Calculated holiday date
+ */
 function GetDate(d1, yr, holidayinfo) //Gets the specified date from the selected holiday at the year provided
 {
 	let d2 = getD1(); //new Date
@@ -289,6 +413,20 @@ function GetDate(d1, yr, holidayinfo) //Gets the specified date from the selecte
 	return d2;
 }
 
+/**
+ * Calculates Easter Sunday for a given year using the Anonymous Gregorian algorithm
+ *
+ * Uses the computus algorithm to determine Easter date:
+ * - Calculates golden number, century, and various correction factors
+ * - Returns month and day in Gregorian calendar
+ * - Works for all years in Gregorian calendar era
+ *
+ * @param {number} year - Year to calculate Easter for
+ * @returns {Array<number>} Array [month, day] where month is 3-4 (March-April)
+ *
+ * @example
+ * getEaster(2026) // Returns [4, 5] for April 5, 2026
+ */
 function getEaster(year) //Thanks to Jeremy's Link
 {
 	var f = Math.floor,
@@ -304,6 +442,32 @@ function getEaster(year) //Thanks to Jeremy's Link
 	return [month, day];
 }
 
+// ============================================
+// Holiday Channel Management
+// ============================================
+
+/**
+ * Sets the holiday channel theme and manages channel state
+ *
+ * Performs multiple operations based on resetid:
+ * - resetid = -1: Rename channel to themed name (spook/thanks/crimbo/defeat)
+ * - resetid = 0: Archive channel (move to Archive category, disable sending)
+ * - resetid = 3: Restore channel (move to Text Channels, enable sending)
+ * - resetid > 0 (not 3): Update holidaychan ID in config
+ *
+ * Theme names and their display:
+ * - "spook": 🎃👻💀🕸️ 𝕳𝖆𝖑𝖑𝖔𝖜𝖘 𝕰𝖛𝖊 🕸️💀👻🎃
+ * - "thanks": 🌽 ᵀʰᵃⁿᵏˢᵍⁱᵛⁱⁿᵍ ⁴: ᴹⁱˢˢⁱⁿᵍ ᵀᵁᴿᴷᴱʸ 🌽
+ * - "crimbo": 🎄 𓀒 匚卄尺丨丂ㄒ爪卂丂 ㄒㄩ尺ㄒㄥ乇 乇ᗪ丨ㄒ丨ㄖ几 𓀒 🎄
+ * - "defeat": 🎉🚨 /🅵🆁🅸🅳🅰🆈 on J₳₦Ʉ₳ⱤɎ 1🅢ⓣ, 2️⃣0️⃣2️⃣7️⃣ 🚨🎉
+ *
+ * Appending "-n" to name skips the rename operation.
+ * Updates babotdata.json with new holidayval and holidaychan settings.
+ *
+ * @param {Guild} guild - Discord guild object for channel operations
+ * @param {string} name - Theme name (spook/thanks/crimbo/defeat) or channel ID when resetid=3
+ * @param {number} [resetid=-1] - Operation mode (-1=rename, 0=archive, 3=restore, >0=set ID)
+ */
 function SetHolidayChan(guild, name, resetid = -1)
 {
 	console.log("SetHolidayChan: " + name + " " + resetid);
@@ -438,6 +602,24 @@ function SetHolidayChan(guild, name, resetid = -1)
 	babadata = baadata;
 }
 
+/**
+ * Generates a visual progress bar showing year completion percentage
+ *
+ * Creates a Unicode block progress bar with gradient transitions:
+ * - █ (full block): Completed segments
+ * - ▓ (dark shade): 66-100% complete in segment
+ * - ▒ (medium shade): 33-66% complete in segment
+ * - ░ (light shade): 0-33% complete in segment
+ *
+ * Calculates progress from January 1st to current date/time, accounting for leap years.
+ * Special handling for end of year (last 1/12): forces full block if very close to end.
+ *
+ * @param {number} n - Number of segments in progress bar (typically 20)
+ * @returns {string} Progress bar string with percentage (e.g., "████████▓▒░░░░░░░░░ 42.31%")
+ *
+ * @example
+ * progressSimple(20) // Returns something like "██████░░░░░░░░░░░░░░ 30.15%"
+ */
 function progressSimple(n)
 {
     var n1less = n - 1;
@@ -479,6 +661,23 @@ function progressSimple(n)
 	return pb + " " + percent + "%";
 }
 
+/**
+ * Creates a new holiday channel in the specified category
+ *
+ * Searches for a category by name (case-insensitive) and creates a text channel:
+ * - Name: "Temp Holiday Channel"
+ * - Position: 3 in category
+ * - Topic: Year progress bar
+ * - Default reaction emoji: 🎄
+ *
+ * After creation, calls SetHolidayChan to configure channel ID and MonthsPlus
+ * to set appropriate theme based on current date.
+ *
+ * @param {Guild} server - Discord guild to create channel in
+ * @param {string} name - Category name to search for (e.g., "text channels")
+ * @param {Date} d1 - Current date for theme determination
+ * @returns {null} Always returns null
+ */
 function CreateChannel(server, name, d1)
 {
 	server.channels.fetch().then(channels => {
@@ -512,6 +711,21 @@ function CreateChannel(server, name, d1)
 	return null;
 }
 
+// ============================================
+// Discord User Management
+// ============================================
+
+/**
+ * Adds a role to multiple users in a guild
+ *
+ * Iterates through a collection of users and adds the specified role to each.
+ * Fetches members individually to ensure they exist in the guild before role addition.
+ *
+ * @param {Message} msg - Discord message object (provides guild context)
+ * @param {Collection} users - Collection of user objects to add role to
+ * @param {Role} role - Discord role to add to users
+ * @returns {Promise<void>}
+ */
 async function RoleAdd(msg, users, role) //dumb user thing because it is needed to work
 {
 	for(let [k, uboat] of users) //iterate through all the users
@@ -521,11 +735,30 @@ async function RoleAdd(msg, users, role) //dumb user thing because it is needed 
 	}
 }
 
+/**
+ * Wrapper function for timing out users (legacy name)
+ *
+ * @param {string} u_id - User ID to timeout
+ * @param {Client} bot - Discord bot client
+ * @param {number} time - Timeout duration in milliseconds
+ * @param {Guild} g - Discord guild object
+ */
 function dailyRandom(u_id, bot, time, g)
 {
 	maidenTime(u_id, bot, time, g);
 }
 
+/**
+ * Times out a user in a Discord guild
+ *
+ * Fetches the user and applies a timeout with reason "Baba Plase".
+ * Commonly used for moderation or Easter egg penalties.
+ *
+ * @param {string} u_id - User ID to timeout
+ * @param {Client} bot - Discord bot client
+ * @param {number} time - Timeout duration in milliseconds
+ * @param {Guild} g - Discord guild object
+ */
 function maidenTime(u_id, bot, time, g)
 {
 	bot.users.fetch(u_id).then(user => {
@@ -533,12 +766,31 @@ function maidenTime(u_id, bot, time, g)
 	}).catch(console.error);
 }
 
+// ============================================
+// Discord API Utilities
+// ============================================
+
+/**
+ * Appends bot token to Authorization header for Discord API requests
+ *
+ * @param {Object} head - Headers object with Authorization field
+ * @returns {Object} Modified headers object with full authorization token
+ */
 function cleanHead(head)
 {
 	head["Authorization"] += global.toke;
 	return head;
 }
 
+/**
+ * Updates voice channel status using Discord API
+ *
+ * Makes a PUT request to Discord API to set custom status for a voice channel.
+ * Status is displayed in the channel for users to see.
+ *
+ * @param {string} channelID - Discord voice channel ID
+ * @param {string} status - Status text to display (max 500 characters)
+ */
 function channelStatusChange(channelID, status)
 {
 	var url = "https://discord.com/api/v10/channels/" + channelID + "/voice-status";
@@ -568,6 +820,24 @@ function channelStatusChange(channelID, status)
 	});
 }
 
+// ============================================
+// String Formatting and Manipulation
+// ============================================
+
+/**
+ * Splits a long string into chunks that fit Discord's 2000 character message limit
+ *
+ * Recursively breaks strings at newline boundaries when possible:
+ * - Finds last newline before 2000 character limit
+ * - If no newline found, hard-breaks at 1990 characters
+ * - Returns array of message-safe strings
+ *
+ * @param {string} vle - String to split into chunks
+ * @returns {Array<string>} Array of strings, each ≤2000 characters
+ *
+ * @example
+ * Seperated(longString) // Returns ["chunk1\n", "chunk2\n", "chunk3"]
+ */
 function Seperated(vle)
 {
 	if (vle.length > 2000)
@@ -591,6 +861,26 @@ function Seperated(vle)
 	else return [vle];
 }
 
+// ============================================
+// File and API Operations
+// ============================================
+
+/**
+ * Executes a Discord API request from a configuration file
+ *
+ * Process flow:
+ * 1. Saves response body to local file
+ * 2. Parses JSON config containing: URL (U), Method (M), Headers (H), Body (B)
+ * 3. Appends user ID to URL endpoint
+ * 4. Makes authenticated API request with bot token
+ * 5. Sends results back to message author via DM
+ * 6. Splits long responses using Seperated() to respect message limits
+ *
+ * @param {Message} message - Discord message for user context and replies
+ * @param {string} id - User/resource ID to append to API URL
+ * @param {string} local - Local file path to save response temporarily
+ * @param {Response} res - Fetch response object with body to pipe
+ */
 function fetchMeAPirate(message, id, local, res) 
 { 
  	const dest = fs.createWriteStream(local);
@@ -634,9 +924,16 @@ function fetchMeAPirate(message, id, local, res)
 
 }
 
+/**
+ * Checks if a user ID exists in the frog help array
+ *
+ * @param {Object} frogdata - Frog data object containing froghelp.ifrog array
+ * @param {string} id - User ID to search for
+ * @returns {number} Index of user in array, or -1 if not found
+ */
 function CheckFrogID(frogdata, id)
 {
-	for ( var i = 0; i < frogdata.froghelp.ifrog.length; i++) 
+	for ( var i = 0; i < frogdata.froghelp.ifrog.length; i++)
 	{
 		if (id == frogdata.froghelp.ifrog[i])
 			return i;
@@ -644,7 +941,19 @@ function CheckFrogID(frogdata, id)
 	return -1;
 }
 
-
+/**
+ * Calculates the number of days between two dates (DST-safe)
+ *
+ * Converts both dates to UTC midnight to avoid daylight saving time issues,
+ * then calculates the difference in whole days.
+ *
+ * @param {Date} a - Start date
+ * @param {Date} b - End date
+ * @returns {number} Number of days from a to b (positive if b is later)
+ *
+ * @example
+ * dateDiffInDays(new Date(2026, 0, 1), new Date(2026, 0, 15)) // Returns 14
+ */
 function dateDiffInDays(a, b) //helper function that does DST helping conversions
 {
   const utc1 = Date.UTC(a.getFullYear(), a.getMonth(), a.getDate());
@@ -655,6 +964,12 @@ function dateDiffInDays(a, b) //helper function that does DST helping conversion
 
 
 
+/**
+ * Retrieves the first attachment from a Discord message
+ *
+ * @param {Message} message - Discord message to extract attachment from
+ * @returns {Attachment|undefined} First attachment or undefined if none exists
+ */
 function getAttachment(message)
 {
 	var file = message.attachments.first();
@@ -668,11 +983,24 @@ function getAttachment(message)
 	return file;
 }
 
+/**
+ * Removes all reactions from a message
+ *
+ * @param {Message} message - Discord message to clear reactions from
+ */
 function fronge(message)
 {
 	message.reactions.removeAll();
 }
 
+/**
+ * Processes an attached file for Discord API operations
+ *
+ * Extracts file attachment, fetches user ID from message content (4th word),
+ * and passes to fetchMeAPirate for API execution.
+ *
+ * @param {Message} message - Discord message with attachment and user ID
+ */
 function dealWithFile(message)
 {
 	var file = getAttachment(message);
@@ -686,11 +1014,43 @@ function dealWithFile(message)
 	})
 }
 
+/**
+ * Wrapper function for file processing (legacy name)
+ *
+ * @param {Message} message - Discord message to process
+ */
 function antiDelay(message)
 {
 	dealWithFile(message);
 }
 
+// ============================================
+// Easter Eggs and Message Reactions
+// ============================================
+
+/**
+ * Processes message content for Easter eggs and automatic reactions
+ *
+ * Easter egg triggers:
+ * - 1/333333 chance: "The Equine Lunar God Empress demands a blood sacrifice."
+ * - "perchance": Replies "# You can't just say perchance"
+ * - "france is better than america": Times out user for 1 minute
+ * - "wake up babe": Replies "You mean Wake up Baba!"
+ * - "christmas" + "bad": Replies "# 🎅🏻🎁 Christmas is GREAT! 🎄❄️"
+ * - "i request an oven at this moment": Random oven-related image/GIF
+ * - April 1st (13:00+) or April 2nd: Extreme emoji reactions (up to 20)
+ *
+ * Also processes:
+ * - Personal reactions via PersonalReact()
+ * - Please checker for custom responses
+ * - Archive/setstring commands for day-of-week functions
+ * - Fish Easter egg checker
+ *
+ * @param {Message} message - Discord message object
+ * @param {string} msgContent - Lowercase message content
+ * @param {Client} bot - Discord bot client for user operations
+ * @returns {Promise<void>}
+ */
 async function preformEasterEggs(message, msgContent, bot)
 {
 	var ames = msgContent.replace(/\s+/g, '');
@@ -838,6 +1198,12 @@ async function preformEasterEggs(message, msgContent, bot)
 	checkForFish(message, msgContent);
 }
 
+/**
+ * Detects day-of-week name in message content
+ *
+ * @param {string} msgContent - Message content to check
+ * @returns {number} Day of week (0=Sunday, 1=Monday, ..., 6=Saturday) or -1 if none found
+ */
 function msgIncDay(msgContent)
 {
 	if (msgContent.includes("monday"))
@@ -858,6 +1224,27 @@ function msgIncDay(msgContent)
 		return -1;
 }
 
+/**
+ * Applies custom emoji reactions based on configured phrase triggers
+ *
+ * Loads REACTOcache.json and checks message for:
+ * - Primary phrase matches
+ * - Alternate phrase combinations (all must be present)
+ * - Emoji presence in message
+ * - Ignored phrase combinations (blocks reaction if present)
+ * - Date range validation (StartDate to EndDate)
+ *
+ * Reaction behavior:
+ * - 2% chance to send emoji as message (if Prompt enabled)
+ * - Reacts with random emoji from ReactIDList
+ * - Skips bot messages containing "indeed, [phrase] please!" (if IgnorePlease enabled)
+ * - Falls back to 👍 if emoji reaction fails
+ *
+ * @param {string} ames - Message content with whitespace removed
+ * @param {Message} message - Discord message object
+ * @param {string} msgContent - Lowercase message content
+ * @returns {number} Count of reactions added to message
+ */
 function PersonalReact(ames, message, msgContent)
 {
 	ames = ames.toLowerCase();
@@ -944,6 +1331,29 @@ function PersonalReact(ames, message, msgContent)
 	return rct;
 }
 
+/**
+ * Checks for "please" triggers and sends customized responses
+ *
+ * Loads Pleasedcache.json and PleasedOVERIDEcache.json to:
+ * - Detect "[person name] please" or "pikus" in messages
+ * - Apply user-specific overrides for custom probability distributions
+ * - Generate responses with varying formats: normal, # (H1), ## (H2), ### (H3)
+ * - Apply random fonts or flag emojis based on configured chances
+ *
+ * Response format: "Indeed, [PersonName] Please!" with variations:
+ * - Normal text (DefaultNormalChance)
+ * - # heading (DefaultH1Chance)
+ * - ## heading (DefaultH2Chance)
+ * - ### heading (DefaultH3Chance)
+ * - Random Unicode font (DefaultRNGFontChance)
+ * - Flag emoji font (DefaultFlagChance)
+ *
+ * Ignores bot messages containing "indeed, [name] please!" to prevent loops.
+ *
+ * @param {Message} message - Discord message object
+ * @param {string} msgContent - Lowercase message content
+ * @param {string} ames - Message content with whitespace removed
+ */
 function pleaseChecker(message, msgContent, ames)
 {
 	var pleasedata = fs.readFileSync(babadata.datalocation + "Pleasedcache.json");
@@ -1026,6 +1436,24 @@ function pleaseChecker(message, msgContent, ames)
 	}
 }
 
+/**
+ * Converts text to Unicode fancy fonts
+ *
+ * Transforms alphanumeric characters (a-z, A-Z, 0-9) to Unicode variants:
+ * - Uses global.reverseLook lookup table for character mappings
+ * - index = -1: Random font from available options
+ * - index = 12: Flag emoji font
+ * - Other indices: Specific font styles
+ *
+ * Preserves non-alphanumeric characters (spaces, punctuation, #, etc.) unchanged.
+ *
+ * @param {string} text - Text to transform
+ * @param {number} [index=-1] - Font index (-1 for random, 12 for flags, 0-N for specific fonts)
+ * @returns {string} Transformed text with fancy Unicode characters
+ *
+ * @example
+ * RandFont("Hello") // Returns something like "ℍ𝕖𝕝𝕝𝕠" or "🇭🇪🇱🇱🇴"
+ */
 function RandFont(text, index = -1)
 {
 	var fonts = global.reverseLook;
@@ -1056,45 +1484,69 @@ function RandFont(text, index = -1)
 	return newText;
 }
 
+/**
+ * Fish Easter egg system - replies with fish images based on message triggers
+ *
+ * Loads FISHcache.json and processes:
+ * - Default occurrences: All fish added to pool with DefaultOccCount weight
+ * - Keyword triggers (ProcFishless): If message contains FishWords, adds extra weight (FishBuff)
+ * - Special "fish" word: 1/500 chance to send random fish from weighted pool
+ *
+ * Fish objects contain:
+ * - url: Image URL to reply with
+ * - DefaultOccCount: Base probability weight
+ * - ProcFishless: If true, enables keyword checking
+ * - FishWords: Comma-separated trigger phrases
+ * - FishBuff: Multiplier for weight when keyword matches
+ * - ProcChance: Probability divisor (1/ProcChance)
+ *
+ * @param {Message} message - Discord message to potentially reply to
+ * @param {string} msgContent - Lowercase message content
+ */
 function checkForFish(message, msgContent)
 {
-	// load babadata.datalocation + "FISHcache.json"
-	
 	var fishData = fs.readFileSync(babadata.datalocation + "FISHcache.json");
-
 	var fish = JSON.parse(fishData);
 
-	var mesgtosend = [];
-	var allfish = [];
+	var mesgtosend = [];  // Fish to send in response
+	var allfish = [];     // Weighted pool of all fish URLs
 
 	var fishio = msgContent.includes("fish");
 
+	// Build weighted pool and check for keyword triggers
 	for (var i = 0; i < fish.length; i++)
 	{
 		fishI = fish[i];
 
+		// Add each fish to pool DefaultOccCount times (creates base probability weight)
+		// Fish with higher DefaultOccCount appear more frequently
 		for (var j = 0; j < fishI.DefaultOccCount; j++)
 		{
 			allfish.push(fishI.url);
 		}
 
+		// ProcFishless: Enable keyword-based triggering
 		if (fishI.ProcFishless)
 		{
 			var procChance = 1 / fishI.ProcChance;
 			var FishWords = fishI.FishWords;
 			var FishWordSimilars = FishWords.split(", ");
 
+			// Only check keywords if random chance succeeds OR message contains "fish"
 			var chanceo = Math.random() < procChance;
 			if (!chanceo && !fishio) continue;
 
+			// Check if message contains any trigger words
 			for (var j = 0; j < FishWordSimilars.length; j++)
 			{
 				if (msgContent.includes(FishWordSimilars[j]))
 				{
+					// Keyword match: Add extra copies to pool (FishBuff multiplier increases probability)
 					for (var j = 0; j < (fishI.DefaultOccCount - 1) * fishI.FishBuff; j++)
 					{
 						allfish.push(fishI.url);
 					}
+					// Also queue this specific fish to send
 					mesgtosend.push(fishI.url);
 					break;
 				}
@@ -1102,21 +1554,25 @@ function checkForFish(message, msgContent)
 		}
 	}
 
+	// Special "fish" word handling: 1/500 chance to override and send random fish from pool
 	if (fishio)
 	{
 		var one500 = Math.random() < (1/500);
 		if (one500)
 		{
+			// Clear queued fish and pick one random fish from weighted pool
 			mesgtosend = [];
 			var num = Math.floor(Math.random() * allfish.length);
 			mesgtosend = [allfish[num]];
 		}
 		else
 		{
+			// 499/500 chance: Don't send fish even though "fish" was mentioned
 			mesgtosend = [];
 		}
 	}
 
+	// Send all queued fish images as replies
 	if (mesgtosend.length > 0)
 	{
 		for (var i = 0; i < mesgtosend.length; i++)
@@ -1126,6 +1582,12 @@ function checkForFish(message, msgContent)
 	}
 }
 
+/**
+ * Selects a random name from an array
+ *
+ * @param {Array<string>} names - Array of names to choose from
+ * @returns {string} Randomly selected name
+ */
 function GetSimilarName(names)
 {
 	var num = Math.floor(Math.random() * names.length);
@@ -1133,6 +1595,25 @@ function GetSimilarName(names)
 	return nam;
 }
 
+// ============================================
+// Discord Builders - Buttons, Embeds, Modals
+// ============================================
+
+/**
+ * Creates paginated button navigation for multiple embed texts
+ *
+ * Adds Previous/Next buttons to each page of content:
+ * - Previous button: Disabled on first page
+ * - Next button: Disabled on last page
+ * - Button IDs: "page0", "page1", "page2", etc.
+ * - Buttons use style 1 (Primary/Blue)
+ *
+ * Delegates to handleButtonsEmbed for interaction handling.
+ *
+ * @param {Array<Object>} texts - Array of embed objects to paginate
+ * @param {Interaction} interaction - Discord interaction that triggered this
+ * @param {Message} message - Message to attach buttons to
+ */
 function FrogButtons(texts, interaction, message)
 {
 	for (var i = 0; i < texts.length; i++)
@@ -1157,6 +1638,27 @@ function FrogButtons(texts, interaction, message)
 	handleButtonsEmbed(interaction.channel, message, interaction.user.id, texts);
 }
 
+/**
+ * Handles "Jump to Haiku" button interactions with modal input
+ *
+ * Flow:
+ * 1. Waits for button click with "jumpToHaiku" in customId
+ * 2. Shows modal with text input for haiku number
+ * 3. Validates input (must be positive integer ≤ data.length)
+ * 4. Updates message to display selected haiku
+ * 5. Resets collector timer and recurses to continue listening
+ *
+ * Modal configuration:
+ * - Title: "Jump to Custom Haiku"
+ * - Input: Short text (style 1), required
+ * - Placeholder: "Haiku Number"
+ * - Timeout: 100 seconds for button, 60 seconds for modal
+ *
+ * @param {Message} message - Message with button components
+ * @param {string} userid - User ID allowed to interact
+ * @param {Array<Object>} data - Array of haiku/embed data
+ * @param {Collector} collector - Message component collector to reset timer
+ */
 function buttonsAwaitMessageComponent(message, userid, data, collector)
 {
 	const collectorFilter = i => {
@@ -1206,8 +1708,29 @@ function buttonsAwaitMessageComponent(message, userid, data, collector)
 	.catch(err => console.error(err, true));
 }
 
+/**
+ * Global object tracking current page index for each message with pagination
+ * Key: message ID, Value: current page index (0-based)
+ */
 global.paged = {};
 
+/**
+ * Sets up button-based pagination system for embeds
+ *
+ * Creates a message component collector that:
+ * - Filters for "page" buttons clicked by specified user
+ * - Updates message content when page buttons clicked
+ * - Resets 30-second timeout on each interaction
+ * - Tracks current page in global.paged object
+ * - Also handles "jumpToHaiku" button via buttonsAwaitMessageComponent
+ * - On timeout: Removes components or uses deadData fallback
+ *
+ * @param {Channel} channel - Discord channel for collector
+ * @param {Message} message - Message to add pagination to
+ * @param {string} userid - User ID allowed to interact with buttons
+ * @param {Array<Object>} data - Array of page data/embeds to paginate through
+ * @param {Array<Object>|null} [deadData=null] - Optional array of button-less versions for timeout state
+ */
 function handleButtonsEmbed(channel, message, userid, data, deadData = null)
 {
 	global.paged[message.id] = 0;
@@ -1241,16 +1764,57 @@ function handleButtonsEmbed(channel, message, userid, data, deadData = null)
 	});
 }
 
+/**
+ * Checks if a URL exists (returns 404 or other status)
+ *
+ * Note: This function has a bug - returns are inside callback, so function always returns undefined.
+ * Kept for compatibility but should not be relied upon.
+ *
+ * @param {string} url - URL to check
+ * @returns {Promise<boolean|undefined>} Intended to return true/false but actually returns undefined
+ * @deprecated Function does not work as intended due to async callback issue
+ */
 async function uExist(url)
 {
 	https.get(url, res => {
-		if (res.statusCode === 404) 
+		if (res.statusCode === 404)
 			return false;
-		else 
+		else
 			return true;
 	});
 }
 
+// ============================================
+// Discord Audit Log Utilities
+// ============================================
+
+/**
+ * Converts Discord audit log action type integer to readable string name
+ *
+ * Maps all Discord audit log event types (as of 2024):
+ * - Guild operations (1)
+ * - Channel operations (10-15)
+ * - Member operations (20-28)
+ * - Role operations (30-32)
+ * - Invite operations (40-42)
+ * - Webhook operations (50-52)
+ * - Emoji operations (60-62)
+ * - Message operations (72-75)
+ * - Integration operations (80-85)
+ * - Sticker operations (90-92)
+ * - Guild scheduled event operations (100-102)
+ * - Thread operations (110-112)
+ * - Auto moderation operations (140-145)
+ * - Creator monetization operations (150-151)
+ * - Voice status operations (192)
+ *
+ * @param {number} int - Discord audit log action type integer
+ * @returns {string} Human-readable action name or "Unknown" if not recognized
+ *
+ * @example
+ * enumConverter(72) // Returns "MessageDelete"
+ * enumConverter(22) // Returns "MemberBanAdd"
+ */
 function enumConverter(int)
 {
 	switch(int)
@@ -1374,6 +1938,54 @@ function enumConverter(int)
 	}
 }
 
+// ============================================
+// Natural Language Time Parsing
+// ============================================
+
+/**
+ * Parses natural language time strings into Date objects
+ *
+ * Supports multiple time formats and modifiers:
+ *
+ * Time formats (HH:MM:SS, HH:MM, or HH):
+ * - "3:30pm" - Specific time with AM/PM
+ * - "15:45" - 24-hour format
+ * - "12am" - Converts 12am to midnight (0:00)
+ * - Automatically advances to next day if time has passed
+ *
+ * Override keywords (highest precedence):
+ * - "midnight" - Next midnight (00:00)
+ * - "noon" - Next noon (12:00)
+ *
+ * Day period keywords:
+ * - "tonight" - 6pm-11:59pm today (or current time-11:59pm if after 6pm)
+ * - "tomorrow" - 7am-10pm next day
+ *
+ * Time of day modifiers (can combine with "tomorrow"):
+ * - "morning" - 7am-11am
+ * - "afternoon" - 12pm-5pm
+ * - "evening" - 6pm-9pm
+ * - "night" - 10pm-11:59pm
+ * - "sometime" - Random time in next 5 days (or full day if with "tomorrow")
+ *
+ * Additional modifiers:
+ * - "later" - Adds 0-2 hours to start time, extends end by 2 hours (or 0-5 hours if standalone)
+ *
+ * Algorithm:
+ * 1. Parses explicit time if present
+ * 2. Applies override keywords
+ * 3. Applies day period and time-of-day constraints
+ * 4. Randomly selects time within calculated range
+ * 5. Returns one random time from all possible interpretations
+ *
+ * @param {string} timestring - Natural language time string
+ * @returns {Date} Parsed future date/time
+ *
+ * @example
+ * getTimeFromString("tomorrow morning") // Random time between 7am-11am tomorrow
+ * getTimeFromString("tonight at 8pm") // 8pm tonight (or tomorrow if past)
+ * getTimeFromString("3:30pm") // Next occurrence of 3:30pm
+ */
 function getTimeFromString(timestring)
 {
 	var currentTime = getD1(true);
@@ -1705,6 +2317,37 @@ function getTimeFromString(timestring)
 }
 
 
+// ============================================
+// Emoji Reaction System
+// ============================================
+
+/**
+ * Applies intelligent emoji reactions based on message content matching
+ *
+ * Loads emojiJSONCache.json and analyzes message for keyword matches:
+ *
+ * Matching algorithm:
+ * 1. Checks if emoji name parts (min 3 chars) appear in message
+ * 2. Checks if actual emoji characters appear in message
+ * 3. Filters out skin tone variations
+ * 4. Groups matches by category for diverse reactions
+ *
+ * Reaction strategy:
+ * - Randomly selects from matched categories to avoid clustering
+ * - Moves used categories to secondary pool
+ * - Cycles through emoji variations within each match
+ * - Continues until reactneeded count reached or emojis exhausted
+ *
+ * Used during special events (e.g., April Fools) for extreme emoji spam.
+ *
+ * @param {Message} message - Discord message to react to
+ * @param {string} msgContent - Lowercase message content for matching
+ * @param {number} [reactneeded=0] - Number of emoji reactions to add
+ * @returns {Promise<void>}
+ *
+ * @example
+ * extremeEmoji(message, "i love cats and dogs", 10) // Adds 10 emoji reactions matching keywords
+ */
 async function extremeEmoji(message, msgContent, reactneeded=0)
 {
 	// load babadata.datalocation + "emojiJSONCache.json
@@ -1823,6 +2466,33 @@ async function extremeEmoji(message, msgContent, reactneeded=0)
 	reactEmoji(goodfellas, slightlyusedcategories, message, reactneeded);
 }
 
+/**
+ * Recursive emoji reaction engine for extremeEmoji system
+ *
+ * Implements multi-round emoji selection algorithm:
+ *
+ * Round progression:
+ * 1. Primary pool (goodfellas): Fresh categories, one emoji per category
+ * 2. Secondary pool (slightlyusedcategories): Categories used once
+ * 3. Next round pool (goodfellasRoundNext): Categories with remaining emoji variations
+ *
+ * Selection process:
+ * - Picks random category from current pool
+ * - Picks random emoji name from category
+ * - Picks random variation of that emoji
+ * - Removes used variation, preserves emoji if variations remain
+ * - Moves category to secondary pool after first use
+ * - Handles reaction failures by incrementing reactneeded counter
+ * - Stops early if message deleted (error code 10008)
+ *
+ * This creates diverse reactions by cycling through categories before repeating.
+ *
+ * @param {Object} goodfellas - Primary emoji pool, grouped by category
+ * @param {Object} slightlyusedcategories - Secondary pool for used categories
+ * @param {Message} message - Discord message to react to
+ * @param {number} reactneeded - Remaining reactions to add
+ * @returns {Promise<void>}
+ */
 async function reactEmoji(goodfellas, slightlyusedcategories, message, reactneeded)
 {
 	var goodfellasRoundNext = {};
@@ -1915,6 +2585,26 @@ async function reactEmoji(goodfellas, slightlyusedcategories, message, reactneed
 	}
 }
 
+// ============================================
+// Random Time Manipulation
+// ============================================
+
+/**
+ * Randomizes time components based on D20 roll (gambling/gamba feature)
+ *
+ * Roll effects:
+ * - Roll 11-20: Randomizes minutes (0-59)
+ * - Roll 17-20: Also randomizes seconds (0-59)
+ * - Roll 1-10: No modification
+ *
+ * Creates uncertainty in scheduled times for gambling-style features.
+ *
+ * @param {Date} time - Date object to randomize
+ * @returns {Date} Modified date with randomized time components
+ *
+ * @example
+ * GambaRoll(new Date()) // 55% chance to randomize minutes, 20% chance to also randomize seconds
+ */
 function GambaRoll(time)
 {
 	var roll = Math.floor(Math.random() * 20) + 1;
@@ -1926,6 +2616,51 @@ function GambaRoll(time)
 	return time;
 }
 
+// ============================================
+// Module Exports
+// ============================================
+
+/**
+ * Exported helper functions for use throughout the bot
+ *
+ * Exports organized by category:
+ *
+ * Discord User Management:
+ * - RoleAdd: Add roles to multiple users
+ * - dailyRandom: Timeout user (wrapper)
+ *
+ * Easter Eggs & Reactions:
+ * - preformEasterEggs: Main Easter egg processor
+ *
+ * Date/Time Utilities:
+ * - dateDiffInDays: DST-safe day difference calculation
+ * - FindDate: Parse dates from natural language
+ * - GetDate: Calculate holiday dates
+ * - getTimeFromString: Parse natural language time strings
+ *
+ * Holiday Management:
+ * - MonthsPlus: Automatic seasonal theme updates
+ * - SetHolidayChan: Configure holiday channel
+ * - CreateChannel: Create new holiday channel
+ * - progressSimple: Generate year progress bar
+ *
+ * Discord Builders:
+ * - FrogButtons: Create paginated button navigation
+ * - handleButtonsEmbed: Button pagination system
+ *
+ * String & File Operations:
+ * - antiDelay: Process file attachments (wrapper)
+ * - getAttachment: Extract message attachment
+ * - fronge: Remove all message reactions
+ * - Seperated: Split strings for Discord message limit
+ *
+ * Utilities:
+ * - CheckFrogID: Check user ID in frog array
+ * - GetSimilarName: Random name selector
+ * - uExist: URL existence checker (deprecated)
+ * - enumConverter: Audit log enum to string
+ * - channelStatusChange: Update voice channel status
+ */
 module.exports = {
 	RoleAdd,
     preformEasterEggs,

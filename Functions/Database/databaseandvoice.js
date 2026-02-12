@@ -1,3 +1,33 @@
+/**
+ * @fileoverview Haiku Database Functions for Baba Discord Bot
+ *
+ * Manages the haiku database with advanced search and filtering:
+ *
+ * Search Features:
+ * - User filtering by Discord name and alternate names
+ * - Date-based filtering (specific dates, before/after, ranges)
+ * - Content search with normalization
+ * - Channel filtering
+ * - Purity score filtering (cursed vs pure haikus)
+ *
+ * Purity System:
+ * - Tracks which haikus contain profanity/inappropriate content
+ * - FormatPurityList(): Groups haikus by purity level
+ * - Allows filtered viewing for different contexts
+ *
+ * Query Construction:
+ * - HaikuSelection(): Builds complex SQL queries from search parameters
+ * - Combines multiple filters with AND/OR logic
+ * - Handles date parsing and validation
+ * - Supports pagination and result limits
+ *
+ * Data Formatting:
+ * - ObtainDBHolidays(): Loads holiday cache from database
+ * - NameFromUser(): Resolves user IDs to display names
+ *
+ * @module databaseandvoice
+ */
+
 var babadata = require('../../babotdata.json'); //baba configuration file
 
 const fs = require('fs');

@@ -1,7 +1,47 @@
+/**
+ * @fileoverview Legacy Text Command Handler for Baba Discord Bot
+ *
+ * Handles old-style prefix-based text commands (e.g., "!baba friday").
+ * Most functionality has been migrated to slash commands, but this remains
+ * for backwards compatibility and Easter egg triggers.
+ *
+ * Command Processing:
+ * - Listens for messages starting with "!baba" or containing trigger phrases
+ * - Parses command name and arguments from message content
+ * - Routes to appropriate command function
+ * - Handles permission checks for admin commands
+ *
+ * Major Text Commands:
+ * - !baba friday: Friday frog image
+ * - !baba help: Command help message
+ * - !baba please: Random response system
+ * - !baba haiku: Haiku database search
+ * - !baba until [holiday]: Days until holiday
+ * - !baba weather/hurricane/aurora: Weather commands
+ * - Various admin commands (grole, vote, moveto, etc.)
+ *
+ * Easter Eggs:
+ * - "please": Triggers babaPlease() random responses
+ * - Contains "frog": Triggers frog-related Easter eggs
+ * - preformEasterEggs(): Handles various trigger phrases
+ *
+ * Legacy Features:
+ * - Message normalization for haiku detection
+ * - CheckFrogID(): Validates user permissions for frog commands
+ * - TextCommandBackup(): Fallback processing for unmatched commands
+ *
+ * Migration Status:
+ * - Most commands now use slash command system (/Commands directory)
+ * - Text commands remain for Easter eggs and backwards compatibility
+ * - New features should use slash commands instead
+ *
+ * @module textCommands
+ * @deprecated Prefer slash commands for new features
+ */
 
 var babadata = require('../babotdata.json'); //baba configuration file
 
-const fs = require('fs'); //file stream used for del fuction
+const fs = require('fs'); //file stream used for del function
 
 //const voice = require('@discordjs/voice')
 //var prism = require("prism-media");

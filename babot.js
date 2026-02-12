@@ -1,3 +1,49 @@
+/**
+ * @fileoverview Main Entry Point for Baba Discord Bot
+ *
+ * This is the main application file that initializes and runs the Baba Discord bot.
+ *
+ * Initialization Sequence:
+ * 1. Load configuration from babotdata.json
+ * 2. Setup logging system (debug.log and DBdebug.log)
+ * 3. Initialize global variables and flags
+ * 4. Create Discord client with 19 gateway intents
+ * 5. Load slash commands from ./Commands directory
+ * 6. Setup event handlers (ready, messageCreate, voiceStateUpdate, etc.)
+ * 7. Login to Discord and start bot
+ *
+ * Global Variables Initialized:
+ * - global.dbAccess[0]: Allow database flag (from -db CLI arg)
+ * - global.dbAccess[1]: Database connection health status
+ * - global.starttime: Bot startup timestamp
+ * - global.DailyErrors: Error counter for auto-shutdown (>50 = exit)
+ * - global.Bot: Discord client instance
+ * - global.toke: Discord bot token
+ * - global.interactions: Cached interaction objects
+ * - global.loggedVCC: Voice channel change log queue
+ *
+ * Event Handlers:
+ * - ready: Initial setup, load Friday counter, start daily tasks
+ * - messageCreate: Process text commands and trigger Easter eggs
+ * - voiceStateUpdate: Track voice channel activity
+ * - guildScheduledEventCreate/Update/Delete: Log Discord events to database
+ * - interactionCreate: Handle slash commands, context menus, buttons, modals
+ *
+ * Logging System:
+ * - Dual log files: debug.log (general) and DBdebug.log (database operations)
+ * - Custom console.log/console.error that write to both file and stdout
+ * - Error tracking with automatic shutdown if >50 errors occur
+ *
+ * Graceful Shutdown:
+ * - SIGINT/SIGTERM handlers for clean exit
+ * - Database cleanup on shutdown
+ * - Reminder system cleanup
+ *
+ * @module babot
+ * @requires discord.js
+ * @requires ./babotdata.json
+ */
+
 var babadata = require('./babotdata.json'); //baba configuration file
 
 const fs = require('fs');
@@ -13,17 +59,18 @@ const txtCommands = require('./TextCommands/textCommands.js');
 
 var overrides = getOverides();
 
+// Database access flags: [allowDB from config, connection health status]
 global.dbAccess = [!process.argv.includes("-db"), process.argv.includes("-db") ? false : true];
-global.starttime = getD1(true); //get today
-global.DailyErrors = 0;
+global.starttime = getD1(true); // Bot startup timestamp
+global.DailyErrors = 0; // Error counter - bot exits if >50 errors
 global.DebugFriday = overrides.DebugFriday;
 
 global.toke = babadata.token;
-global.interactions = {};
+global.interactions = {}; // Cached interaction objects
 
-global.loggedVCC = [];
+global.loggedVCC = []; // Voice channel change log queue (when DB is down)
 
-global.Bot = null;
+global.Bot = null; // Discord client instance (set in makeBot())
 
 uignoreErrors = overrides.uignoreErrors;
 

@@ -1,3 +1,30 @@
+/**
+ * @fileoverview Reminder System for Baba Discord Bot
+ *
+ * Implements a comprehensive reminder system with state machine management:
+ *
+ * State Machine:
+ * - "Added" → Reminder created, waiting to be scheduled
+ * - "Pending" → Past midnight but not yet time, waiting for scheduled time
+ * - "Running" → Timeout active, will fire at scheduled time
+ * - "Edited" → Reminder modified, needs rescheduling
+ * - "Deleted" → Removed, will be cleaned up
+ *
+ * Storage:
+ * - JSON file (reminders.json) for persistence
+ * - Database sync for reliability
+ * - Global timeout objects (to{}) for active timers
+ *
+ * Features:
+ * - Natural language time parsing ("tomorrow afternoon", "in 2 hours")
+ * - Midnight boundary handling (Pending vs Running states)
+ * - Button-based reminder editing via Discord UI
+ * - Automatic refresh and rescheduling on bot restart
+ * - DM notifications when reminders fire
+ *
+ * @module remindersByBaba
+ */
+
 var babadata = require('../../babotdata.json'); //baba configuration file
 
 var fs = require('fs');
@@ -10,9 +37,11 @@ const { getD1 } = require("../../Tools/overrides");
 const { antiDelay } = require("./basicHelpers");
 const { DeleteReminderInDB, EditReminderInDB, AddReminderToDB, LoadReminderCache, DMMePlease } = require("../Database/databaseVoiceController");
 
+// Active timeout objects keyed by reminder ID
 var to = {};
 var toList = [];
 
+// Tracks which reminder messages exist to prevent duplicates
 global.ReminderMessageExists = {};
 
 function getReminderJSON()

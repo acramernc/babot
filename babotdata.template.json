@@ -1,24 +1,25 @@
 {
-    "token":"CHANGEME",
-    "pass":"server passwords listed here",
-    "datalocation":"./Data/",
-    "adminId":"",
-    "logchan":"",
-    "politicschan":"",
-    "botchan":"",
-    "generalchan":"",
-    "holidaychan":"0",
-    "holidayval":"null",
-    "temp":"./",
-    "emoji":"",
-    "clientId":"",
-    "guildId":"",
-    "database": {
-        "host": "",
-        "port": 0,
-        "user": "",
-        "password": "",
-        "database": ""
-    },
-    "countrole": ""
+	"token": "CHANGEME",
+	"pass": "server passwords listed here",
+	"datalocation": "./Data/",
+	"adminId": "",
+	"logchan": "",
+	"politicschan": "",
+	"botchan": "",
+	"generalchan": "",
+	"holidaychan": "0",
+	"holidayval": "null",
+	"temp": "./",
+	"emoji": "",
+	"clientId": "",
+	"guildId": "",
+	"database": {
+		"host": "",
+		"port": 0,
+		"user": "",
+		"password": "",
+		"database": ""
+	},
+	"countrole": "",
+	"testing": "true"
 }
