@@ -9,7 +9,7 @@
 	"generalchan": "",
 	"holidaychan": "0",
 	"holidayval": "null",
-	"temp": "./",
+	"temp": "./Temp/",
 	"emoji": "",
 	"clientId": "",
 	"guildId": "",

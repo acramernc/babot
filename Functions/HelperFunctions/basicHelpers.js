@@ -1767,20 +1767,21 @@ function handleButtonsEmbed(channel, message, userid, data, deadData = null)
 /**
  * Checks if a URL exists (returns 404 or other status)
  *
- * Note: This function has a bug - returns are inside callback, so function always returns undefined.
- * Kept for compatibility but should not be relied upon.
- *
  * @param {string} url - URL to check
- * @returns {Promise<boolean|undefined>} Intended to return true/false but actually returns undefined
- * @deprecated Function does not work as intended due to async callback issue
+ * @returns {Promise<boolean>} Returns true if URL exists (non-404), false if 404 or network error
  */
 async function uExist(url)
 {
-	https.get(url, res => {
-		if (res.statusCode === 404)
-			return false;
-		else
-			return true;
+	return new Promise((resolve) => {
+		https.get(url, res => {
+			if (res.statusCode === 404)
+				resolve(false);
+			else
+				resolve(true);
+		}).on('error', () => {
+			// On network error, consider URL as non-existent
+			resolve(false);
+		});
 	});
 }
 

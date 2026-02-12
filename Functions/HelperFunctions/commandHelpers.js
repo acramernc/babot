@@ -547,7 +547,7 @@ async function checkHurricaneStuff(hurricanename)
 			if (hurricanenameNum < 10) hurricanenameNum = "0" + hurricanenameNum;
 			var url = "https://www.nhc.noaa.gov/storm_graphics/AT" + hurricanenameNum + "/atcf-al" + hurricanenameNum + thisYear + ".xml";
 
-			var urlE = uExist(url);
+			var urlE = await uExist(url);
 
 			if (!urlE)
 			{
