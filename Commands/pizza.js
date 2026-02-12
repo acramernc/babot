@@ -1,4 +1,4 @@
-const { babaPizza } = require('../Functions/commandFunctions.js');
+const { babaPizzaMenu } = require('../Functions/pizzaFunctions.js');
 const { SlashCommandBuilder } = require('@discordjs/builders');
 
 module.exports = {
@@ -6,6 +6,8 @@ module.exports = {
 		.setName('pizza')
 		.setDescription('Orders you pizza ;)'),
 	async execute(interaction, bot) {
-		await interaction.reply(babaPizza());
+		await interaction.deferReply({ ephemeral: false });
+		const menu = babaPizzaMenu();
+		await interaction.editReply(menu);
 	},
 };

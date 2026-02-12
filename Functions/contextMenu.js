@@ -391,6 +391,36 @@ async function modalInfo(interaction, bot)
             delete global.ReminderList[remID];
         }
     }
+    else if (cid.startsWith('pizzaOrder-')) {
+        const { babaPizzaOrder } = require('./pizzaFunctions.js');
+
+        await interaction.deferReply({ ephemeral: false });
+
+        const orderID = cid.split('-')[1];
+        const orderData = global.pizzaOrders[cid];
+
+        if (!orderData) {
+            await interaction.editReply({ content: 'BABA LOST YOUR ORDER! Please start over! 😅' });
+            return;
+        }
+
+        const address = interaction.fields.getTextInputValue('addressInput');
+        const instructions = interaction.fields.getTextInputValue('instructionsInput');
+
+        // Place the order
+        const result = await babaPizzaOrder({
+            ...orderData,
+            address: address || 'Mock address (test mode)',
+            instructions,
+            userID: interaction.user.id,
+            guildID: interaction.guild.id
+        });
+
+        // Cleanup global state
+        delete global.pizzaOrders[cid];
+
+        await interaction.editReply(result);
+    }
 }
 
 // ============================================================================
@@ -736,6 +766,139 @@ async function buttonInfo(interaction, bot)
             interaction.showModal(modal);
         }
     }
+    // ========================================================================
+    // PIZZA ORDERING HANDLERS
+    // ========================================================================
+    else if (cid.startsWith('pizza_')) {
+        const { babaPizzaTrack, babaPizzaHistory, calculateOrderPrice } = require('./pizzaFunctions.js');
+        const { getUserOrders } = require('./Database/databasePizzaController.js');
+        const menuData = require('./Pizza/pizzaMenuData.js');
+
+        const action = cid.replace('pizza_', '');
+
+        if (action === 'order_new') {
+            // Show order builder with select menus
+            const orderBuilderUI = {
+                content: '🍕 **BUILD YOUR PIZZA**\n\nSelect size, crust, and toppings below, then click "Place Order".',
+                components: [
+                    // Size select menu
+                    new ActionRowBuilder().addComponents(
+                        new Discord.StringSelectMenuBuilder()
+                            .setCustomId('pizza_size')
+                            .setPlaceholder('Select pizza size')
+                            .addOptions(menuData.sizes.map(s => ({
+                                label: s.name,
+                                value: s.id,
+                                description: `$${s.price.toFixed(2)}`
+                            })))
+                    ),
+                    // Crust select menu
+                    new ActionRowBuilder().addComponents(
+                        new Discord.StringSelectMenuBuilder()
+                            .setCustomId('pizza_crust')
+                            .setPlaceholder('Select crust type')
+                            .addOptions(menuData.crusts.map(c => ({
+                                label: c.name,
+                                value: c.id,
+                                description: c.price ? `+$${c.price.toFixed(2)}` : 'No extra charge'
+                            })))
+                    ),
+                    // Toppings multi-select
+                    new ActionRowBuilder().addComponents(
+                        new Discord.StringSelectMenuBuilder()
+                            .setCustomId('pizza_toppings')
+                            .setPlaceholder('Select toppings (optional)')
+                            .setMinValues(0)
+                            .setMaxValues(10)
+                            .addOptions(menuData.toppings.map(t => ({
+                                label: t,
+                                value: t.toLowerCase().replace(/ /g, '_')
+                            })))
+                    ),
+                    // Submit button
+                    new ActionRowBuilder().addComponents(
+                        new Discord.ButtonBuilder()
+                            .setCustomId('pizza_confirm_order')
+                            .setLabel('Place Order')
+                            .setStyle(3)
+                            .setEmoji('✅')
+                    )
+                ]
+            };
+
+            // Store in global state
+            const tempOrderID = Date.now().toString();
+            if (!global.pizzaOrders) {
+                global.pizzaOrders = {};
+            }
+            global.pizzaOrders[tempOrderID] = {
+                userID: interaction.user.id,
+                size: null,
+                crust: null,
+                toppings: []
+            };
+
+            await interaction.update(orderBuilderUI);
+        }
+        else if (action === 'track') {
+            // Get user's most recent order
+            const orders = await getUserOrders(interaction.user.id, 1);
+            if (orders.length === 0) {
+                await interaction.update({ content: 'BABA FINDS NO ORDERS! Order a pizza first! 🍕', components: [] });
+                return;
+            }
+
+            const result = await babaPizzaTrack(orders[0].OrderID, null);
+            await interaction.update(result);
+        }
+        else if (action === 'history' || action.startsWith('history_page_')) {
+            let page = 0;
+            if (action.startsWith('history_page_')) {
+                page = parseInt(action.replace('history_page_', ''));
+            }
+            const result = await babaPizzaHistory(interaction.user.id, page);
+            await interaction.update(result);
+        }
+        else if (action === 'confirm_order') {
+            // Find the order data from global state
+            const orderData = Object.values(global.pizzaOrders || {}).find(o => o.userID === interaction.user.id);
+
+            if (!orderData || !orderData.size || !orderData.crust) {
+                await interaction.update({ content: 'BABA CONFUSED! Please select size and crust first! 🤔', components: [] });
+                return;
+            }
+
+            // Show confirmation modal with address input
+            const modal = new ModalBuilder()
+                .setCustomId('pizzaOrder-' + Date.now())
+                .setTitle('Confirm Your Pizza Order');
+
+            const addressInput = new TextInputBuilder()
+                .setCustomId('addressInput')
+                .setLabel('Delivery Address (optional in mock mode)')
+                .setStyle(1)
+                .setRequired(false)
+                .setPlaceholder('123 Main St, City, State ZIP');
+
+            const instructionsInput = new TextInputBuilder()
+                .setCustomId('instructionsInput')
+                .setLabel('Special Instructions (optional)')
+                .setStyle(2)
+                .setRequired(false)
+                .setPlaceholder('Ring doorbell twice, leave at door, etc.');
+
+            modal.addComponents(
+                new ActionRowBuilder().addComponents(addressInput),
+                new ActionRowBuilder().addComponents(instructionsInput)
+            );
+
+            // Store order data with modal ID for retrieval
+            const modalID = 'pizzaOrder-' + Date.now();
+            global.pizzaOrders[modalID] = orderData;
+
+            await interaction.showModal(modal);
+        }
+    }
 }
 
 // ============================================================================
@@ -787,6 +950,51 @@ async function stringSelectInfo(interaction, bot)
         
         await interaction.reply({content: "puritymode", ephemeral: true});
         await interaction.deleteReply();
+    }
+    else if (cid.startsWith('pizza_')) {
+        const { calculateOrderPrice } = require('./pizzaFunctions.js');
+        const menuData = require('./Pizza/pizzaMenuData.js');
+
+        const action = cid.replace('pizza_', '');
+        const values = interaction.values;
+
+        // Find the user's active order
+        const orderData = Object.values(global.pizzaOrders || {}).find(o => o.userID === interaction.user.id);
+
+        if (!orderData) {
+            await interaction.reply({ content: 'BABA LOST YOUR ORDER! Please start over! 😅', ephemeral: true });
+            return;
+        }
+
+        if (action === 'size') {
+            orderData.size = values[0];
+        }
+        else if (action === 'crust') {
+            orderData.crust = values[0];
+        }
+        else if (action === 'toppings') {
+            orderData.toppings = values;
+        }
+
+        // Update message to show current selections
+        const currentPrice = calculateOrderPrice(
+            orderData.size || 'medium',
+            orderData.crust || 'hand_tossed',
+            orderData.toppings || []
+        );
+
+        const sizeObj = menuData.getSizeById(orderData.size);
+        const crustObj = menuData.getCrustById(orderData.crust);
+        const toppingNames = (orderData.toppings || []).map(t => menuData.normalizeToppingName(t));
+
+        const summary = `🍕 **YOUR PIZZA ORDER**\n\n` +
+            `**Size:** ${sizeObj ? sizeObj.name : 'Not selected'}\n` +
+            `**Crust:** ${crustObj ? crustObj.name : 'Not selected'}\n` +
+            `**Toppings:** ${toppingNames.length > 0 ? toppingNames.join(', ') : 'None'}\n\n` +
+            `**Estimated Price: $${currentPrice.toFixed(2)}**\n\n` +
+            `Select more options below, then click "Place Order" when ready!`;
+
+        await interaction.update({ content: summary });
     }
 }
 

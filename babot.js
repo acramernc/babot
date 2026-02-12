@@ -177,7 +177,17 @@ function botOn(bot)
 		else
 			global.fridayCounter = fridayData
 		
+		// Initialize pizza ordering global state
+		global.pizzaOrders = {};      // Active order interactions
+		global.pizzaTimeouts = {};    // Mock order status timeouts
+		global.pizzaMenuCache = null; // Cached menu data
+
 		dailyCallStart(bot, __dirname);
+
+		// Start pizza order tracking
+		if (global.RefreshPizzaOrders) {
+			global.RefreshPizzaOrders();
+		}
 	});
 	
 	bot.commands = new Collection();
@@ -289,6 +299,12 @@ global.CleanupEverything = function()
 	global.DailyCallCleanup();
 	global.DBVoiceCleanup();
 	global.CommandHelperCleanup();
+	if (global.CleanupPizzaOrders) {
+		global.CleanupPizzaOrders();
+	}
+	if (global.DBPizzaCleanup) {
+		global.DBPizzaCleanup();
+	}
 	cleanupFn();
 }
 

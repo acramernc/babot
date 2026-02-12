@@ -19,6 +19,7 @@
   "homepage": "https://github.com/Aconka/babot#readme",
   "dependencies": {
     "discord.js": "^14.13.0",
+    "dominos": "^3.3.1",
     "fs": "^0.0.1-security",
     "https": "^1.0.0",
     "jimp": "^0.16.13",
